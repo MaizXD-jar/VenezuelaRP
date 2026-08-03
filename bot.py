@@ -18,6 +18,24 @@ if not TOKEN:
         "Copia .env.example a .env y pon tu token ahí (nunca lo escribas en el código)."
     )
 
+# ── Servidor de pruebas: forzar TODOS los canales a uno solo ──────────────────
+# En el servidor 1511638671332343920, cualquier guild.get_channel(id) en
+# CUALQUIER parte del bot (avisos de policía, noticias, muertos, etc.) devuelve
+# siempre el mismo canal fijo, sin importar qué ID se haya pedido.
+SERVIDOR_CANAL_FIJO_ID = 1511638671332343920
+CANAL_FIJO_ID = 1511638672599158796
+
+_get_channel_original = discord.Guild.get_channel
+
+
+def _get_channel_parcheado(self, channel_id, *args, **kwargs):
+    if self.id == SERVIDOR_CANAL_FIJO_ID:
+        return _get_channel_original(self, CANAL_FIJO_ID, *args, **kwargs)
+    return _get_channel_original(self, channel_id, *args, **kwargs)
+
+
+discord.Guild.get_channel = _get_channel_parcheado
+
 # ── Channel IDs ───────────────────────────────────────────────────────────────
 CH_CREAR_DOC       = 1484797041560260688  # ← Canal principal actualizado
 CH_CREAR_DOC_OLD   = 1369366721550614700  # ← Canal viejo (compatibilidad)
