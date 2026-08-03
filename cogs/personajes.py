@@ -12,6 +12,7 @@ import random
 import asyncio
 import time
 from utils import db
+from utils.canal_fijo import id_efectivo
 from utils.roles import (ROLES_SALARIO, ROL_CIUDADANO, ROL_HOMBRE, ROL_MUJER,
                           ROL_MUERTO, ROL_CRIMINAL, ROL_PRISIONERO,
                           ROL_PRIMARIA, ROL_SECUNDARIA, ROL_UNIVERSITARIO, ROL_GRADUADO,
@@ -780,9 +781,10 @@ class Personajes(commands.Cog):
 
     @app_commands.command(name="crear_personaje", description="Crea tu personaje para Venezuela RP")
     async def crear_personaje_slash(self, interaction: discord.Interaction):
-        if interaction.channel_id not in (CH_CREAR_DOC, CH_CREAR_DOC_OLD):
+        canal_requerido = id_efectivo(interaction.guild.id, CH_CREAR_DOC)
+        if interaction.channel_id not in (canal_requerido, CH_CREAR_DOC, CH_CREAR_DOC_OLD):
             return await interaction.response.send_message(
-                f"❌ Usa este comando en <#{CH_CREAR_DOC}>.", ephemeral=True
+                f"❌ Usa este comando en <#{canal_requerido}>.", ephemeral=True
             )
         existente = await db.get("personajes", str(interaction.user.id))
         if existente and not existente.get("muerto"):
@@ -890,8 +892,9 @@ class Personajes(commands.Cog):
 
     @commands.command(name="crearPersonaje", aliases=["cp"])
     async def crear_personaje_prefix(self, ctx):
-        if ctx.channel.id not in (CH_CREAR_DOC, CH_CREAR_DOC_OLD):
-            return await ctx.send(f"❌ Ve a <#{CH_CREAR_DOC}>.", delete_after=5)
+        canal_requerido = id_efectivo(ctx.guild.id, CH_CREAR_DOC)
+        if ctx.channel.id not in (canal_requerido, CH_CREAR_DOC, CH_CREAR_DOC_OLD):
+            return await ctx.send(f"❌ Ve a <#{canal_requerido}>.", delete_after=5)
         existente = await db.get("personajes", str(ctx.author.id))
         if existente and not existente.get("muerto"):
             return await ctx.send("❌ Ya tienes un personaje activo.", delete_after=5)

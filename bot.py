@@ -5,6 +5,8 @@ import asyncio
 from pathlib import Path
 import os
 
+from utils.canal_fijo import SERVIDOR_CANAL_FIJO_ID, CANAL_FIJO_ID, es_servidor_fijo, id_efectivo
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -19,12 +21,9 @@ if not TOKEN:
     )
 
 # ── Servidor de pruebas: forzar TODOS los canales a uno solo ──────────────────
-# En el servidor 1511638671332343920, cualquier guild.get_channel(id) en
+# En el servidor SERVIDOR_CANAL_FIJO_ID, cualquier guild.get_channel(id) en
 # CUALQUIER parte del bot (avisos de policía, noticias, muertos, etc.) devuelve
 # siempre el mismo canal fijo, sin importar qué ID se haya pedido.
-SERVIDOR_CANAL_FIJO_ID = 1511638671332343920
-CANAL_FIJO_ID = 1511638672599158796
-
 _get_channel_original = discord.Guild.get_channel
 
 
@@ -296,6 +295,17 @@ async def on_ready():
     print(f"Bot listo: {bot.user} ({bot.user.id})")
     await bot.tree.sync()
     print("[OK] Slash commands sincronizados")
+
+    for guild in bot.guilds:
+        if es_servidor_fijo(guild.id):
+            canal = guild.get_channel(CANAL_FIJO_ID)
+            if canal:
+                try:
+                    await canal.send(f"✅ **{bot.user}** conectado correctamente. Este es el canal fijo de pruebas para este servidor.")
+                except Exception as e:
+                    print(f"[WARN] No se pudo enviar el mensaje de prueba al canal fijo: {e}")
+            else:
+                print(f"[WARN] No se encontró el canal fijo {CANAL_FIJO_ID} en el servidor {guild.id}.")
 
     for cog in bot.cogs.values():
         if hasattr(cog, "start_tasks"):
