@@ -4,6 +4,42 @@ from discord import app_commands
 import json
 import random
 from utils import db
+from utils.mapa import SECTORES, get_sector_de_canal
+
+
+async def _autocomplete_ubicacion(interaction: discord.Interaction, current: str):
+    """Autocompletado de destinos para /forzar_ubicacion: sectores, canales del
+    mapa y canales de casas existentes en el servidor."""
+    cur = (current or "").lower().strip()
+    empiezan, contienen = [], []
+
+    for sector_key, sec in SECTORES.items():
+        etiqueta = f"📍 {sector_key} (sector)"[:100]
+        ch = app_commands.Choice(name=etiqueta, value=sector_key)
+        if not cur or sector_key.lower().startswith(cur):
+            empiezan.append(ch)
+        elif cur in sector_key.lower():
+            contienen.append(ch)
+
+        for canal_nombre in sec.get("canales", {}):
+            ch2 = app_commands.Choice(name=f"{sec.get('emoji','')} {canal_nombre}"[:100], value=canal_nombre)
+            if not cur:
+                contienen.append(ch2)
+            elif canal_nombre.lower().startswith(cur):
+                empiezan.append(ch2)
+            elif cur in canal_nombre.lower():
+                contienen.append(ch2)
+
+    if interaction.guild:
+        for canal in interaction.guild.text_channels:
+            if not canal.name.startswith("casa-"):
+                continue
+            if cur and cur not in canal.name.lower():
+                continue
+            contienen.append(app_commands.Choice(name=f"🏠 {canal.name}"[:100], value=canal.name))
+
+    return (empiezan + contienen)[:25]
+
 
 # ── IDs ───────────────────────────────────────────────────────────────────────
 CH_PERSONAJES_ACEPTADOS = 1359320812003393567
@@ -230,13 +266,65 @@ class Admin(commands.Cog):
 
     @app_commands.command(name="forzar_ubicacion", description="[ADMIN] Fuerza la ubicación de un jugador")
     @es_admin()
+    @app_commands.describe(usuario="Jugador a mover", ubicacion="Canal o sector destino (usa el autocompletado)")
+    @app_commands.autocomplete(ubicacion=_autocomplete_ubicacion)
     async def forzar_ubicacion(self, interaction: discord.Interaction, usuario: discord.Member, ubicacion: str):
+        """ANTES: guardaba el texto tal cual en 'ubicacion' sin validar nada y NUNCA
+        tocaba 'canal_actual'. Si el admin escribía "#casa-8-..." Discord mandaba
+        "<#123456>", que quedaba guardado como si fuera un sector — y a partir de
+        ahí el jugador no podía viajar a ningún lado ("no hay ruta de <#...> a
+        petare"). Ahora se resuelve y valida el destino, y se actualizan ambos
+        campos de forma coherente."""
         p = await db.get("personajes", str(usuario.id))
         if not p:
             return await interaction.response.send_message("❌ Sin personaje.", ephemeral=True)
-        p["ubicacion"] = ubicacion
+
+        destino = (ubicacion or "").strip()
+
+        # Resolver menciones de canal <#id> o #nombre
+        if destino.startswith("<#") and destino.endswith(">"):
+            id_txt = destino[2:-1].strip("!&")
+            canal_obj = interaction.guild.get_channel(int(id_txt)) if id_txt.isdigit() else None
+            if not canal_obj:
+                return await interaction.response.send_message(
+                    "❌ No pude resolver ese canal. Usa el autocompletado.", ephemeral=True)
+            destino = canal_obj.name
+        elif destino.startswith("#"):
+            destino = destino[1:]
+        destino = destino.lower().replace(" ", "-")
+
+        # ¿Es un sector? → lo mandamos a su primer canal
+        if destino in SECTORES:
+            sector = destino
+            canales = list(SECTORES[sector]["canales"].keys())
+            canal_final = canales[0] if canales else None
+        else:
+            sector = get_sector_de_canal(destino)
+            if not sector:
+                # Último intento: ¿existe un canal con ese nombre en el servidor?
+                canal_obj = discord.utils.get(interaction.guild.text_channels, name=destino)
+                if canal_obj:
+                    sector = get_sector_de_canal(canal_obj.name)
+                if not sector:
+                    return await interaction.response.send_message(
+                        f"❌ `{destino}` no es un canal ni un sector válido del mapa. Usa el autocompletado.",
+                        ephemeral=True)
+            canal_final = destino
+
+        p["ubicacion"] = sector
+        p["canal_actual"] = canal_final
+        p["en_viaje"] = False
         await db.set("personajes", str(usuario.id), p)
-        await interaction.response.send_message(f"📍 {usuario.mention} movido a **{ubicacion}**.", ephemeral=True)
+
+        # Cancelar cualquier viaje en curso para que no lo sobreescriba al llegar
+        try:
+            from cogs.viaje import viajes_activos
+            viajes_activos.pop(usuario.id, None)
+        except Exception:
+            pass
+
+        await interaction.response.send_message(
+            f"📍 {usuario.mention} movido a **{canal_final or sector}** (sector: `{sector}`).", ephemeral=True)
 
     @app_commands.command(name="anuncio", description="[ADMIN] Envía un anuncio del servidor")
     @es_admin()

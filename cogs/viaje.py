@@ -12,7 +12,7 @@ import asyncio
 import random
 import time
 from utils import db
-from utils.mapa import SECTORES, TIEMPOS_VIAJE, get_tiempo, get_sector_de_canal, get_canal_info, metodos_disponibles, mejor_ruta
+from utils.mapa import SECTORES, TIEMPOS_VIAJE, get_tiempo, get_sector_de_canal, get_canal_info, metodos_disponibles, mejor_ruta, es_canal_casa
 
 ROL_POLICIA_ID  = 1359320808526450780
 ROL_BOMBERO_ID  = 1359320808509538345
@@ -77,27 +77,64 @@ def _tiene_rol_emergencia(member: discord.Member) -> bool:
 
 
 async def _get_destinos_choices(interaction: discord.Interaction, current: str):
-    """Autocomplete: devuelve canales disponibles para viajar."""
-    choices = []
+    """Autocomplete: devuelve canales disponibles para viajar.
+
+    ANTES: recorría los sectores en orden y cortaba en seco al llegar a 25, así
+    que solo aparecían los canales de los primeros sectores y el resto del mapa
+    era invisible en /viajar. Ahora se puntúan las coincidencias (las que
+    empiezan por lo escrito van primero) y se incluyen también los canales de
+    casas existentes en el servidor.
+    """
+    cur = (current or "").lower().strip()
+    exactos, empiezan, contienen = [], [], []
+
     for sector_key, sec in SECTORES.items():
+        emoji = sec.get("emoji", "")
         for canal_nombre in sec.get("canales", {}):
-            if current.lower() in canal_nombre.lower() or current.lower() in sector_key.lower():
-                label = f"{sec.get('emoji','')} {canal_nombre}"
-                choices.append(app_commands.Choice(name=label[:100], value=canal_nombre))
-            if len(choices) >= 25:
-                return choices
-    return choices[:25]
+            etiqueta = f"{emoji} {canal_nombre}"[:100]
+            choice = app_commands.Choice(name=etiqueta, value=canal_nombre)
+            if not cur:
+                contienen.append(choice)
+            elif canal_nombre.lower() == cur:
+                exactos.append(choice)
+            elif canal_nombre.lower().startswith(cur):
+                empiezan.append(choice)
+            elif cur in canal_nombre.lower() or cur in sector_key.lower():
+                contienen.append(choice)
+
+    # Canales de casas del servidor (no están en SECTORES porque se renombran)
+    if interaction.guild:
+        for canal in interaction.guild.text_channels:
+            if not canal.name.startswith("casa-"):
+                continue
+            if cur and cur not in canal.name.lower():
+                continue
+            choice = app_commands.Choice(name=f"🏠 {canal.name}"[:100], value=canal.name)
+            if cur and canal.name.lower().startswith(cur):
+                empiezan.append(choice)
+            else:
+                contienen.append(choice)
+
+    return (exactos + empiezan + contienen)[:25]
 
 
-def _parse_destino(destino: str) -> str:
+def _parse_destino(destino: str, guild: discord.Guild = None) -> str:
     """
     Acepta:
     - #canal (mention de Discord → extrae el nombre)
-    - <#12345678> (mention raw)
+    - <#12345678> (mention raw → resuelve el ID contra el servidor)
     - nombre-de-canal directamente
+
+    ANTES devolvía None ante un `<#id>`, que es justo lo que manda Discord al
+    escribir "#" en un slash command — por eso "no dejaba hacer #".
     """
-    destino = destino.strip()
+    destino = (destino or "").strip()
     if destino.startswith("<#") and destino.endswith(">"):
+        id_txt = destino[2:-1].strip("!&")
+        if id_txt.isdigit() and guild:
+            canal = guild.get_channel(int(id_txt))
+            if canal:
+                return canal.name
         return None
     if destino.startswith("#"):
         destino = destino[1:]
@@ -250,7 +287,7 @@ class Viaje(commands.Cog):
             except:
                 pass
         if canal_nombre is None:
-            canal_nombre = _parse_destino(destino)
+            canal_nombre = _parse_destino(destino, interaction.guild)
         await self._ejecutar_viaje(interaction, metodo.lower(), canal_nombre or destino)
 
     # ── Prefix: !viajar ──────────────────────────────────────────────────────
@@ -286,7 +323,7 @@ class Viaje(commands.Cog):
         if ctx.message.channel_mentions:
             canal_nombre = ctx.message.channel_mentions[0].name
         else:
-            canal_nombre = _parse_destino(destino_raw)
+            canal_nombre = _parse_destino(destino_raw, ctx.guild)
 
         await self._ejecutar_viaje(ctx, metodo, canal_nombre or destino_raw)
 
@@ -331,6 +368,31 @@ class Viaje(commands.Cog):
         canal_actual_nombre = datos.get("canal_actual", "")
         sector_origen = datos.get("ubicacion", "")
 
+        # ── Auto-reparación de ubicación corrupta ────────────────────────────
+        # El viejo /forzar_ubicacion guardaba cualquier texto como sector (incluso
+        # menciones tipo "<#123456>"), dejando al personaje atascado sin poder
+        # viajar a ningún lado. Si el sector guardado no existe en el mapa, se
+        # deduce del canal actual; si tampoco, se manda al sector por defecto.
+        if sector_origen not in SECTORES:
+            sector_reparado = get_sector_de_canal(canal_actual_nombre) if canal_actual_nombre else None
+            if not sector_reparado:
+                mention = str(sector_origen)
+                if mention.startswith("<#") and mention.endswith(">"):
+                    id_txt = mention[2:-1].strip("!&")
+                    canal_obj = guild.get_channel(int(id_txt)) if id_txt.isdigit() else None
+                    if canal_obj:
+                        sector_reparado = get_sector_de_canal(canal_obj.name)
+                        if sector_reparado:
+                            canal_actual_nombre = canal_obj.name
+            if not sector_reparado:
+                sector_reparado = "petare"
+                canal_actual_nombre = canal_actual_nombre or "calle-principal-petare"
+            sector_origen = sector_reparado
+            await db.update("personajes", str(user.id), {
+                "ubicacion": sector_origen,
+                "canal_actual": canal_actual_nombre,
+            })
+
         # Resolver destino
         sector_destino = get_sector_de_canal(destino)
         if destino in SECTORES:
@@ -344,6 +406,15 @@ class Viaje(commands.Cog):
                 destino = canal_discord.name
             if not sector_destino:
                 return await reply(f"❌ Canal/sector `{destino}` no encontrado en el mapa.", ephemeral=True)
+
+        # Si el destino es una casa, el canal tiene que existir de verdad en Discord.
+        # (Antes se podía iniciar un viaje hacia una casa que nunca se generó y el
+        # jugador quedaba "llegando" a un canal inexistente.)
+        if es_canal_casa(destino) and not discord.utils.get(guild.text_channels, name=destino):
+            return await reply(
+                f"❌ La casa `{destino}` no tiene canal creado en este servidor. "
+                f"Un admin puede generarlas con `/iniciar_rp` o `/reorganizar_casas`.",
+                ephemeral=True)
 
         # Calcular tiempo
         if _es_viaje_prision(canal_actual_nombre, destino):

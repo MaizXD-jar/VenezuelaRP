@@ -279,17 +279,59 @@ def get_tiempo(origen: str, destino: str, metodo: str) -> int:
     return rutas.get(metodo, 0)
 
 
+def _slug_sector(texto: str, max_len: int = 12) -> str:
+    """Replica el slug que usa cogs/propiedades.py al renombrar canales de casas."""
+    import re as _re
+    t = texto.lower()
+    for src, dst in [("á","a"),("é","e"),("í","i"),("ó","o"),("ú","u"),("ñ","n")]:
+        t = t.replace(src, dst)
+    t = _re.sub(r'[^a-z0-9\-]', '-', t)
+    t = _re.sub(r'-+', '-', t).strip('-')
+    return t[:max_len]
+
+
+def sector_de_canal_casa(canal: str) -> str | None:
+    """Los canales de casas NO están en SECTORES['canales'] porque se renombran
+    dinámicamente al comprarlas: `casa-{N}-{sector_slug}` o
+    `casa-{N}-{sector_slug}-{nombre}`. Antes esto hacía que get_sector_de_canal()
+    devolviera None para cualquier casa comprada, y por eso era imposible viajar
+    desde o hacia una casa ("no hay ruta", "canal no encontrado en el mapa").
+    Aquí se deduce el sector a partir del nombre del canal."""
+    if not canal or not canal.startswith("casa-"):
+        return None
+    partes = canal.split("-")
+    if len(partes) < 3:
+        return None  # "casa-5" a secas: sin sector, ambiguo entre sectores
+    # El slug del sector puede tener guiones (ej: las-mercedes), así que se prueba
+    # de la coincidencia más larga a la más corta.
+    resto = partes[2:]
+    for n in range(len(resto), 0, -1):
+        candidato = "-".join(resto[:n])
+        for sec_key in SECTORES:
+            if _slug_sector(sec_key) == candidato:
+                return sec_key
+    return None
+
+
 def get_sector_de_canal(canal: str) -> str | None:
     for sec_key, sec in SECTORES.items():
         if canal in sec["canales"]:
             return sec_key
-    return None
+    return sector_de_canal_casa(canal)
+
+
+def es_canal_casa(canal: str) -> bool:
+    return bool(canal) and canal.startswith("casa-")
 
 
 def get_canal_info(canal: str) -> dict | None:
     for sec in SECTORES.values():
         if canal in sec["canales"]:
             return sec["canales"][canal]
+    if es_canal_casa(canal):
+        sector = sector_de_canal_casa(canal)
+        if sector:
+            return {"emoji": "🏠", "tipo": "vivienda", "peligro": 1, "casas": 1}
     return None
 
 
