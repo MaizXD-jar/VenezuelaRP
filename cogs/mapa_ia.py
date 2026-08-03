@@ -22,8 +22,23 @@ from utils import db
 from utils.inventario import tiene_telefono
 from utils.mapa import SECTORES, mejor_ruta
 
-GEMINI_MODEL = "gemini-2.5-flash-lite"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GEMINI_MODEL_ENV = os.getenv("GEMINI_MODEL", "").strip()
+
+# Google va retirando modelos y bloqueando los viejos para usuarios nuevos
+# (gemini-2.5-flash-lite ya no admite cuentas nuevas). Por eso se prueban varios
+# en orden: si uno está deprecado o no disponible, se pasa automáticamente al
+# siguiente en vez de fallar. Puedes forzar uno concreto con GEMINI_MODEL en .env.
+MODELOS_GEMINI = [m for m in [
+    GEMINI_MODEL_ENV,
+    "gemini-3.5-flash-lite",   # el más barato y rápido (GA desde julio 2026)
+    "gemini-3.1-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+] if m]
+
+
+def _url_modelo(modelo: str) -> str:
+    return f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
 
 SYSTEM_PROMPT = (
     "Eres 'VenezuelaMaps IA', el asistente de mapas del teléfono en un servidor de "
@@ -97,22 +112,43 @@ class MapaIA(commands.Cog):
         prompt = f"CONTEXTO:\n{contexto}\n\nPREGUNTA DEL JUGADOR: {pregunta}"
 
         data = None
+        modelo_usado = None
+        ultimo_error = ""
         async with ctx.typing():
+            payload = {
+                "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            }
+            headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+            timeout = aiohttp.ClientTimeout(total=25)
             try:
-                payload = {
-                    "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                }
-                headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-                timeout = aiohttp.ClientTimeout(total=20)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(GEMINI_URL, json=payload, headers=headers) as resp:
-                        data = await resp.json()
-                        if resp.status != 200:
-                            error_msg = data.get("error", {}).get("message", str(data))
-                            return await ctx.send(f"❌ La app de mapas no respondió bien (¿API key inválida o sin cuota?): {error_msg[:200]}")
+                    for modelo in MODELOS_GEMINI:
+                        try:
+                            async with session.post(_url_modelo(modelo), json=payload, headers=headers) as resp:
+                                respuesta = await resp.json()
+                                if resp.status == 200:
+                                    data = respuesta
+                                    modelo_usado = modelo
+                                    break
+                                ultimo_error = respuesta.get("error", {}).get("message", str(respuesta))
+                                # 404/400 suelen ser "modelo no disponible/deprecado" → probar el siguiente
+                                if resp.status in (400, 404):
+                                    continue
+                                # 429 (sin cuota) o 403 (key inválida): no sirve reintentar con otro modelo
+                                break
+                        except Exception as e:
+                            ultimo_error = str(e)
+                            continue
             except Exception as e:
                 return await ctx.send(f"❌ No se pudo conectar con la IA del mapa: {e}")
+
+        if data is None:
+            return await ctx.send(
+                f"❌ La app de mapas no pudo responder con ningún modelo disponible.\n"
+                f"Último error: `{ultimo_error[:300]}`\n"
+                f"Si dice *quota* has agotado la cuota diaria gratuita; si dice *API key*, revisa `GEMINI_API_KEY` en el `.env`."
+            )
 
         try:
             texto = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -124,7 +160,7 @@ class MapaIA(commands.Cog):
             description=texto.strip()[:4000],
             color=discord.Color.teal()
         )
-        embed.set_footer(text=f"📍 Ubicación: {sector_actual or '?'} | Powered by Gemini")
+        embed.set_footer(text=f"📍 Ubicación: {sector_actual or '?'} | {modelo_usado}")
         await ctx.send(embed=embed)
 
     @mapa_ia.error

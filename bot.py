@@ -280,7 +280,7 @@ async def load_cogs():
         "cogs.propiedades", "cogs.trabajos", "cogs.banco", "cogs.admin",
         "cogs.roleplay", "cogs.ciudad", "cogs.tecnologia", "cogs.politica",
         "cogs.setup_rp", "cogs.mercado_negro", "cogs.educacion", "cogs.casino", "cogs.empresas",
-        "cogs.hospital", "cogs.mapa_ia", "cogs.minijuegos",
+        "cogs.hospital", "cogs.mapa_ia", "cogs.minijuegos", "cogs.embeds_canales",
     ]
     for cog in cogs:
         try:

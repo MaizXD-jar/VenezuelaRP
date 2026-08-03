@@ -169,6 +169,49 @@ def _resolver_canal_casa(guild: discord.Guild, sector: str, numero: int, casa: d
     return None
 
 
+async def refrescar_embed_casa(guild, sector: str, casa_id: str, casa: dict):
+    """Mantiene sincronizado el embed del canal de la casa con su estado real
+    (dueño, puerta, seguridad...). Se llama tras comprar, alquilar, ocupar,
+    desalojar o cambiar la seguridad."""
+    try:
+        from cogs.embeds_canales import _embed_casa
+        canal = guild.get_channel(casa["canal_id"]) if casa.get("canal_id") else None
+        if not canal:
+            canal = discord.utils.get(guild.text_channels, name=casa.get("canal_nombre", casa_id))
+        if not canal:
+            return
+        embed, view = _embed_casa(guild, sector, casa_id, casa)
+        registro = await db.get("embeds_canales", str(canal.id))
+        if registro and registro.get("mensaje_id"):
+            try:
+                msg = await canal.fetch_message(int(registro["mensaje_id"]))
+                await msg.edit(embed=embed, view=view)
+                return
+            except Exception:
+                pass
+        msg = await canal.send(embed=embed, view=view)
+        try:
+            await msg.pin(reason="Embed informativo de la casa")
+        except Exception:
+            pass
+        await db.set("embeds_canales", str(canal.id), {"mensaje_id": msg.id, "canal": canal.name})
+    except Exception as e:
+        print(f"[WARN] refrescar_embed_casa {sector}/{casa_id}: {e}")
+
+
+def _es_residente(casa: dict, user_id) -> bool:
+    """True si el usuario vive en la casa: dueño, inquilino, okupa, o residente
+    registrado (caso de la casa de los padres, que no tiene dueño-jugador)."""
+    uid = str(user_id)
+    return (
+        casa.get("dueño") == uid
+        or casa.get("inquilino") == uid
+        or casa.get("okupa") == uid
+        or uid in casa.get("residentes", [])
+        or casa.get("padres_de") == uid
+    )
+
+
 def _es_canal_de_mi_casa(canal_nombre: str, datos: dict) -> bool:
     """Verifica que el personaje esté en el canal de SU propia casa."""
     mis_casas = datos.get("casas", [])
@@ -273,6 +316,15 @@ class Propiedades(commands.Cog):
                     estado_txt += " | 🏠 Alquilada"
             elif casa.get("okupa"):
                 estado_txt = "🚨 Okupa"
+            elif casa.get("padres_de") or casa.get("estado") == "ocupada_padres":
+                # Casa de los padres de un jugador: ocupada por NPCs, NO está a la venta.
+                m = ctx.guild.get_member(int(casa["padres_de"])) if casa.get("padres_de") else None
+                de_quien = f" de {m.display_name}" if m else ""
+                puerta_txt = "🔓 Abierta" if casa.get("puerta_abierta") else "🔒 Cerrada"
+                estado_txt = f"👨‍👩‍👦 Casa de los padres{de_quien} | {puerta_txt}"
+            elif casa.get("inquilino"):
+                m = ctx.guild.get_member(int(casa["inquilino"]))
+                estado_txt = f"🏠 Alquilada por {m.display_name if m else 'Desconocido'}"
             else:
                 amob = "✅ Amoblada" if casa.get("amoblada") else "🪑 Sin muebles"
                 estado_txt = f"✅ Disponible | {amob}"
@@ -323,6 +375,10 @@ class Propiedades(commands.Cog):
         casa = casas[casa_id]
         if casa["dueño"]:
             return await reply(f"❌ Casa {numero} ya tiene dueño.", ephemeral=True)
+        if casa.get("padres_de") or casa.get("estado") == "ocupada_padres":
+            return await reply(f"❌ La casa {numero} está habitada por una familia (casa de padres). No está a la venta.", ephemeral=True)
+        if casa.get("okupa"):
+            return await reply(f"❌ La casa {numero} está ocupada por un okupa. Hay que desalojarlo primero.", ephemeral=True)
 
         precio = casa["precio"]
         dinero = datos.get("dinero", 0)
@@ -402,6 +458,7 @@ class Propiedades(commands.Cog):
         embed.add_field(name="Precio", value=f"${precio:,}", inline=True)
         embed.add_field(name="Saldo restante", value=f"${dinero-precio:,.2f}", inline=True)
         embed.add_field(name="Canal", value=f"`{nuevo_canal_nombre}`", inline=True)
+        await refrescar_embed_casa(guild, sector, casa_id, casa)
         embed.set_footer(text="El canal casa-N ha sido renombrado con tu nombre.")
         await reply("", embed=embed)
 
@@ -419,6 +476,8 @@ class Propiedades(commands.Cog):
         casa = casas[casa_id]
         if casa["inquilino"]:
             return await ctx.send("❌ Casa ya tiene inquilino.")
+        if casa.get("padres_de") or casa.get("estado") == "ocupada_padres":
+            return await ctx.send("❌ Esa casa está habitada por una familia (casa de padres). No se alquila.")
         if not casa["en_alquiler"] and not casa["en_venta"]:
             return await ctx.send("❌ Casa no disponible.")
         alquiler = casa["alquiler"]
@@ -473,6 +532,7 @@ class Propiedades(commands.Cog):
                 print(f"[WARN] Canal alquiler: {e}")
 
         await ctx.send(f"🏠 Alquilaste **{casa_id}** en **{sector}** por ${alquiler:,}/mes. Canal: `{nuevo_canal_nombre}`")
+        await refrescar_embed_casa(guild, sector, casa_id, casa)
 
     # ── !abrir_puerta / !cerrar_puerta ─────────────────────────────────────────
     @commands.command(name="abrir_puerta")
@@ -489,7 +549,7 @@ class Propiedades(commands.Cog):
             return await ctx.send("❌ Este comando solo funciona dentro del canal de tu casa.")
 
         sector, casa_id, casa, casas = casa_data
-        if casa.get("dueño") != str(ctx.author.id) and casa.get("inquilino") != str(ctx.author.id):
+        if not _es_residente(casa, ctx.author.id):
             return await ctx.send("❌ No eres el dueño ni inquilino de esta casa.")
 
         # Verificar que el mensaje se envía desde el canal correcto
@@ -526,7 +586,7 @@ class Propiedades(commands.Cog):
             return await ctx.send("❌ Este comando solo funciona dentro del canal de tu casa.")
 
         sector, casa_id, casa, casas = casa_data
-        if casa.get("dueño") != str(ctx.author.id) and casa.get("inquilino") != str(ctx.author.id):
+        if not _es_residente(casa, ctx.author.id):
             return await ctx.send("❌ No eres el dueño ni inquilino de esta casa.")
 
         casa["puerta_abierta"] = False
@@ -559,7 +619,7 @@ class Propiedades(commands.Cog):
             return await ctx.send("❌ Este comando solo funciona dentro del canal de tu casa.")
 
         sector, casa_id, casa, casas = casa_data
-        if casa.get("dueño") != str(ctx.author.id) and casa.get("inquilino") != str(ctx.author.id):
+        if not _es_residente(casa, ctx.author.id):
             return await ctx.send("❌ No eres el dueño ni inquilino de esta casa.")
 
         invitados = casa.get("invitados", [])

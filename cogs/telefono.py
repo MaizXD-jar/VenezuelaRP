@@ -5,6 +5,7 @@ entre personajes, "llamadas" simuladas, mensajes de texto.
 import discord
 from discord.ext import commands
 import asyncio
+import random
 from utils import db
 
 # Formato del canal privado: 📱tel-{nombre1}-{nombre2}
@@ -179,7 +180,7 @@ class Telefono(commands.Cog):
             description=mensaje,
             color=discord.Color.blurple()
         )
-        tel = datos_self.get("telefono","???")
+        tel = await asegurar_numero(ctx.author.id, datos_self)
         embed.set_author(name=f"💬 SMS de {datos_self['nombre']} ({tel})")
         embed.set_footer(text="Responde en este canal.")
 
@@ -235,8 +236,39 @@ class Telefono(commands.Cog):
         datos = await db.get("personajes", str(ctx.author.id))
         if not datos:
             return await ctx.send("❌ Sin personaje.")
-        tel = datos.get("telefono","No asignado")
-        await ctx.send(f"📱 Tu número: **{tel}**", delete_after=15)
+
+        inv = datos.get("inventario", {})
+        if not any("telefono" in i or "smartphone" in i for i in inv):
+            return await ctx.send("❌ No tienes ningún teléfono. Cómprate uno en la tienda (`telefono_basico` o `smartphone`).")
+
+        tel = await asegurar_numero(ctx.author.id, datos)
+        await ctx.send(
+            f"📱 Tu número: **{tel}**\n"
+            f"Comparte este número para que te llamen con `!llamar` o te escriban con `!sms`.",
+            delete_after=30
+        )
+
+
+async def asegurar_numero(user_id, datos: dict = None) -> str:
+    """Devuelve el número del personaje, generando uno único si aún no tiene.
+
+    ANTES: cogs/personajes.py guardaba "telefono": None al crear el personaje y
+    NADA lo rellenaba nunca — ni siquiera comprar un teléfono en la tienda — así
+    que !mi_numero mostraba siempre "None" y era imposible que te llamaran.
+    """
+    if datos is None:
+        datos = await db.get("personajes", str(user_id)) or {}
+    tel = datos.get("telefono")
+    if tel:
+        return tel
+
+    existentes = {p.get("telefono") for p in (await db.all("personajes")).values() if p.get("telefono")}
+    for _ in range(200):
+        nuevo = f"0{random.choice(['412','414','416','424','426'])}-{random.randint(1000000, 9999999)}"
+        if nuevo not in existentes:
+            await db.update("personajes", str(user_id), {"telefono": nuevo})
+            return nuevo
+    return "0000-0000000"
 
 async def setup(bot):
     await bot.add_cog(Telefono(bot))

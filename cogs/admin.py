@@ -7,6 +7,70 @@ from utils import db
 from utils.mapa import SECTORES, get_sector_de_canal
 
 
+async def _todos_los_items() -> dict:
+    """Catálogo completo de ítems que un admin puede dar: tienda legal, armas,
+    equipo defensivo y drogas del mercado negro."""
+    catalogo = {}
+    try:
+        from cogs.economia import TIENDA_ITEMS
+        for k, v in TIENDA_ITEMS.items():
+            catalogo[k] = v.get("categoria", "misc")
+    except Exception:
+        pass
+    try:
+        from utils.armas import TODAS_LAS_ARMAS, EQUIPO_DEFENSIVO
+        for k in TODAS_LAS_ARMAS:
+            catalogo.setdefault(k, "arma")
+        for k in EQUIPO_DEFENSIVO:
+            catalogo.setdefault(k, "defensa")
+    except Exception:
+        pass
+    try:
+        from cogs.mercado_negro import DROGAS
+        for k in DROGAS:
+            catalogo.setdefault(k, "droga")
+    except Exception:
+        pass
+    return catalogo
+
+
+async def _autocomplete_item(interaction: discord.Interaction, current: str):
+    cur = (current or "").lower().strip()
+    catalogo = await _todos_los_items()
+    emojis = {"arma": "🔫", "defensa": "🛡️", "droga": "💊", "comida": "🍽️",
+              "medicina": "💉", "tech": "📱", "vehiculo": "🚗", "ropa": "👕",
+              "herramienta": "🔧", "hogar": "🏠", "documento": "📄", "misc": "📦"}
+    empiezan, contienen = [], []
+    for nombre, cat in sorted(catalogo.items()):
+        etiqueta = f"{emojis.get(cat,'📦')} {nombre} ({cat})"[:100]
+        ch = app_commands.Choice(name=etiqueta, value=nombre)
+        if not cur:
+            contienen.append(ch)
+        elif nombre.lower().startswith(cur):
+            empiezan.append(ch)
+        elif cur in nombre.lower() or cur in cat:
+            contienen.append(ch)
+    return (empiezan + contienen)[:25]
+
+
+async def _autocomplete_item_inventario(interaction: discord.Interaction, current: str):
+    """Para /quitar_item: solo muestra lo que el jugador realmente tiene."""
+    cur = (current or "").lower().strip()
+    usuario = None
+    for opt in (interaction.data.get("options") or []):
+        for sub in (opt.get("options") or [opt]):
+            if sub.get("name") == "usuario":
+                usuario = sub.get("value")
+    if not usuario:
+        return await _autocomplete_item(interaction, current)
+    datos = await db.get("personajes", str(usuario))
+    inv = (datos or {}).get("inventario", {})
+    return [
+        app_commands.Choice(name=f"📦 {k} (x{v})"[:100], value=k)
+        for k, v in inv.items() if not cur or cur in k.lower()
+    ][:25]
+
+
 async def _autocomplete_ubicacion(interaction: discord.Interaction, current: str):
     """Autocompletado de destinos para /forzar_ubicacion: sectores, canales del
     mapa y canales de casas existentes en el servidor."""
@@ -156,7 +220,8 @@ class Admin(commands.Cog):
 
     @app_commands.command(name="dar_item", description="[ADMIN] Da un ítem al inventario de un jugador")
     @es_admin()
-    @app_commands.describe(usuario="Jugador", item="Nombre del ítem", cantidad="Cantidad")
+    @app_commands.describe(usuario="Jugador", item="Ítem (usa el autocompletado)", cantidad="Cantidad")
+    @app_commands.autocomplete(item=_autocomplete_item)
     async def dar_item(self, interaction: discord.Interaction, usuario: discord.Member, item: str, cantidad: int = 1):
         p = await db.get("personajes", str(usuario.id))
         if not p:
@@ -169,6 +234,7 @@ class Admin(commands.Cog):
 
     @app_commands.command(name="quitar_item", description="[ADMIN] Quita un ítem del inventario de un jugador")
     @es_admin()
+    @app_commands.autocomplete(item=_autocomplete_item_inventario)
     async def quitar_item(self, interaction: discord.Interaction, usuario: discord.Member, item: str, cantidad: int = 1):
         p = await db.get("personajes", str(usuario.id))
         if not p:
@@ -349,7 +415,7 @@ class Admin(commands.Cog):
         casas_ocupadas = 0
         for sector_casas in casas.values():
             if isinstance(sector_casas, dict):
-                casas_ocupadas += sum(1 for c in sector_casas.values() if c.get("dueno"))
+                casas_ocupadas += sum(1 for c in sector_casas.values() if c.get("dueño"))
         embed = discord.Embed(title="📊 Estadísticas del Servidor", color=0x2ECC71)
         embed.add_field(name="👥 Personajes", value=f"Total: {len(personajes)}\n✅ Vivos: {vivos}\n💀 Muertos: {muertos}")
         embed.add_field(name="🤖 NPCs", value=str(len(npcs)))

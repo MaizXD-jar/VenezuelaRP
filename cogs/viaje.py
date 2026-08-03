@@ -417,6 +417,11 @@ class Viaje(commands.Cog):
                 ephemeral=True)
 
         # Calcular tiempo
+        # ruta_escalas debe existir SIEMPRE: más abajo se lee sin condición, y si
+        # solo se definía en la rama de sectores distintos, cualquier viaje dentro
+        # del mismo sector reventaba con UnboundLocalError → la interacción nunca
+        # se respondía y Discord mostraba "La aplicación no ha respondido".
+        ruta_escalas = None
         if _es_viaje_prision(canal_actual_nombre, destino):
             segundos = 20
             minutos = 1
@@ -425,7 +430,6 @@ class Viaje(commands.Cog):
             segundos = minutos * 60
         else:
             minutos = get_tiempo(sector_origen, sector_destino, metodo)
-            ruta_escalas = None
             if minutos == 0:
                 ruta_escalas = mejor_ruta(sector_origen, sector_destino)
                 if not ruta_escalas or not ruta_escalas["pasos"]:

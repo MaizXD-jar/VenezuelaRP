@@ -152,29 +152,76 @@ async def _spawn_personaje(guild: discord.Guild, member: discord.Member, datos: 
         partes = casa_padres_str.split(":")
         if len(partes) == 2:
             sector_padres, casa_id_padres = partes
-            num_casa = casa_id_padres.replace("casa-", "")
-            sector_slug = sector_padres.replace(" ", "-")[:12]
-            nombre_canal_casa = f"casa-{num_casa}-{sector_slug}-padres"
 
-            canal_discord = discord.utils.get(guild.text_channels, name=nombre_canal_casa)
-            if not canal_discord:
-                cat = discord.utils.get(guild.categories, name=sector_padres.upper())
+            # ANTES: se creaba un canal NUEVO "casa-N-sector-padres" en la categoría
+            # del sector, sin tocar la BD. Resultado: quedaban DOS canales para la
+            # misma casa (el original "casa-N" seguía figurando como Disponible en
+            # !casas) y la casa de los padres no tenía dueño ni seguridad.
+            # Ahora se reutiliza y renombra la casa existente y se marca ocupada.
+            from cogs.propiedades import _inicializar_casas_sector, _resolver_canal_casa, _slug
+
+            nombre_slug = _slug(nombre.split()[0] if nombre else "hijo", 10)
+            num_casa = casa_id_padres.replace("casa-", "")
+            sector_slug = _slug(sector_padres, 12)
+            nombre_canal_casa = f"casa-{num_casa}-{sector_slug}-padres-{nombre_slug}"[:95]
+
+            casas_sector = await _inicializar_casas_sector(sector_padres)
+            casa_data = casas_sector.get(casa_id_padres)
+
+            # Si esa casa ya tiene dueño real, buscar otra libre para no pisarla
+            if casa_data and (casa_data.get("dueño") or casa_data.get("inquilino")):
+                libre = next((cid for cid, c in casas_sector.items()
+                              if not c.get("dueño") and not c.get("inquilino") and not c.get("okupa")), None)
+                if libre:
+                    casa_id_padres = libre
+                    casa_data = casas_sector[libre]
+                    num_casa = libre.replace("casa-", "")
+                    nombre_canal_casa = f"casa-{num_casa}-{sector_slug}-padres-{nombre_slug}"[:95]
+
+            canal_discord = None
+            if casa_data:
+                canal_discord = _resolver_canal_casa(guild, sector_padres, int(num_casa), casa_data)
+
+            if canal_discord:
+                try:
+                    await canal_discord.edit(
+                        name=nombre_canal_casa,
+                        topic=f"🏠 Casa de los padres de {nombre} en {sector_padres}"
+                    )
+                except Exception as e:
+                    print(f"[WARN] No se pudo renombrar canal casa padres: {e}")
+            else:
+                # No existía el canal (servidor sin /iniciar_rp): crearlo en la
+                # categoría de casas correcta, no en la del sector.
+                nombre_cat_casas = f"🏠 CASAS - {sector_padres.upper()}"
+                cat = discord.utils.get(guild.categories, name=nombre_cat_casas)
                 if not cat:
                     try:
-                        cat = await guild.create_category(sector_padres.upper())
+                        cat = await guild.create_category(nombre_cat_casas)
                     except Exception as e:
-                        print(f"[WARN] No se pudo crear categoría {sector_padres}: {e}")
+                        print(f"[WARN] No se pudo crear categoría de casas {sector_padres}: {e}")
                 if cat:
                     try:
                         overwrites = await canal_privado_base(guild)
                         canal_discord = await guild.create_text_channel(
                             name=nombre_canal_casa,
                             category=cat,
-                            topic=f"Casa de los padres de {nombre} en {sector_padres}",
+                            topic=f"🏠 Casa de los padres de {nombre} en {sector_padres}",
                             overwrites=overwrites
                         )
                     except Exception as e:
                         print(f"[WARN] No se pudo crear canal casa padres: {e}")
+
+            if canal_discord and casa_data is not None:
+                # Marcar la casa como ocupada por los padres (NPC) para que deje de
+                # salir como "Disponible" y para que el hijo pueda usar puertas/seguridad.
+                casa_data["estado"] = "ocupada_padres"
+                casa_data["canal_nombre"] = nombre_canal_casa
+                casa_data["canal_id"] = canal_discord.id
+                casa_data["padres_de"] = str(member.id)
+                casa_data["residentes"] = list(set(casa_data.get("residentes", []) + [str(member.id)]))
+                casas_sector[casa_id_padres] = casa_data
+                await db.set("casas", sector_padres, casas_sector)
 
             if canal_discord:
                 canal_spawn_nombre = canal_discord.name
