@@ -1,0 +1,530 @@
+{
+  "comisario_rafael_méndez": {
+    "nombre": "Comisario Rafael Méndez",
+    "edad": 52,
+    "trabajo": "Comisario CPNB",
+    "dinero": 1200.0,
+    "tipo": "policia",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 8,
+      "agilidad": 7,
+      "resistencia": 5,
+      "tecnica": 5,
+      "inteligencia": 11
+    },
+    "inventario": {
+      "glock_17": 1,
+      "esposas": 1
+    },
+    "ubicacion": "distrito-capital",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "sargento_yolanda_torres": {
+    "nombre": "Sargento Yolanda Torres",
+    "edad": 38,
+    "trabajo": "Sargento CPNB",
+    "dinero": 600.0,
+    "tipo": "policia",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 7,
+      "agilidad": 4,
+      "resistencia": 8,
+      "tecnica": 8,
+      "inteligencia": 8
+    },
+    "inventario": {
+      "glock_17": 1,
+      "esposas": 1
+    },
+    "ubicacion": "petare",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "agente_carlos_blanco": {
+    "nombre": "Agente Carlos Blanco",
+    "edad": 28,
+    "trabajo": "Agente CPNB",
+    "dinero": 300.0,
+    "tipo": "policia",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 6,
+      "agilidad": 8,
+      "resistencia": 5,
+      "tecnica": 4,
+      "inteligencia": 5
+    },
+    "inventario": {
+      "glock_17": 1,
+      "esposas": 1
+    },
+    "ubicacion": "petare",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "inspector_gloria_ramírez": {
+    "nombre": "Inspector Gloria Ramírez",
+    "edad": 44,
+    "trabajo": "Inspectora CPNB",
+    "dinero": 800.0,
+    "tipo": "policia",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 7,
+      "agilidad": 6,
+      "resistencia": 5,
+      "tecnica": 7,
+      "inteligencia": 5
+    },
+    "inventario": {
+      "glock_17": 1,
+      "esposas": 1
+    },
+    "ubicacion": "las-mercedes",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "oficial_pedro_gutiérrez": {
+    "nombre": "Oficial Pedro Gutiérrez",
+    "edad": 32,
+    "trabajo": "Oficial CPNB",
+    "dinero": 450.0,
+    "tipo": "policia",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 6,
+      "agilidad": 6,
+      "resistencia": 5,
+      "tecnica": 3,
+      "inteligencia": 5
+    },
+    "inventario": {
+      "glock_17": 1,
+      "esposas": 1
+    },
+    "ubicacion": "miranda",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "director_hernán_salazar": {
+    "nombre": "Director Hernán Salazar",
+    "edad": 58,
+    "trabajo": "Director SEBIN",
+    "dinero": 5000.0,
+    "tipo": "sebin",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 9,
+      "agilidad": 8,
+      "resistencia": 4,
+      "tecnica": 5,
+      "inteligencia": 6
+    },
+    "inventario": {
+      "m4_carbine": 1,
+      "chaleco_antibalas": 1
+    },
+    "ubicacion": "distrito-capital",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "agente_encubierto_la_sombra": {
+    "nombre": "Agente Encubierto 'La Sombra'",
+    "edad": 35,
+    "trabajo": "Agente Encubierto SEBIN",
+    "dinero": 2000.0,
+    "tipo": "sebin",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 8,
+      "agilidad": 7,
+      "resistencia": 6,
+      "tecnica": 9,
+      "inteligencia": 5
+    },
+    "inventario": {
+      "m4_carbine": 1,
+      "chaleco_antibalas": 1
+    },
+    "ubicacion": "petare",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "general_simón_álvarez": {
+    "nombre": "General Simón Álvarez",
+    "edad": 62,
+    "trabajo": "General FANB",
+    "dinero": 8000.0,
+    "tipo": "militar",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 10,
+      "agilidad": 8,
+      "resistencia": 6,
+      "tecnica": 5,
+      "inteligencia": 11
+    },
+    "inventario": {
+      "m4_carbine": 1,
+      "chaleco_antibalas": 1
+    },
+    "ubicacion": "distrito-capital",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "teniente_rodrigo_vargas": {
+    "nombre": "Teniente Rodrigo Vargas",
+    "edad": 30,
+    "trabajo": "Teniente FANB",
+    "dinero": 700.0,
+    "tipo": "militar",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 9,
+      "agilidad": 5,
+      "resistencia": 8,
+      "tecnica": 9,
+      "inteligencia": 12
+    },
+    "inventario": {
+      "m4_carbine": 1,
+      "chaleco_antibalas": 1
+    },
+    "ubicacion": "23-de-enero",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "ministra_luisa_contreras": {
+    "nombre": "Ministra Luisa Contreras",
+    "edad": 49,
+    "trabajo": "Ministra del Interior",
+    "dinero": 15000.0,
+    "tipo": "gobierno",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 5,
+      "agilidad": 7,
+      "resistencia": 7,
+      "tecnica": 7,
+      "inteligencia": 6
+    },
+    "inventario": {},
+    "ubicacion": "distrito-capital",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "alcalde_josé_figueroa": {
+    "nombre": "Alcalde José Figueroa",
+    "edad": 55,
+    "trabajo": "Alcalde de Caracas",
+    "dinero": 20000.0,
+    "tipo": "gobierno",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 4,
+      "agilidad": 6,
+      "resistencia": 4,
+      "tecnica": 9,
+      "inteligencia": 7
+    },
+    "inventario": {},
+    "ubicacion": "distrito-capital",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "nelson_domingo": {
+    "nombre": "Nelson Domingo",
+    "edad": 48,
+    "trabajo": "Jefe de la Banda",
+    "dinero": 50000.0,
+    "tipo": "criminal",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 9,
+      "agilidad": 9,
+      "resistencia": 5,
+      "tecnica": 9,
+      "inteligencia": 5
+    },
+    "inventario": {
+      "ak47": 1
+    },
+    "ubicacion": "petare",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "marisol_domingo": {
+    "nombre": "Marisol Domingo",
+    "edad": 36,
+    "trabajo": "Distribuidora Mayor",
+    "dinero": 25000.0,
+    "tipo": "criminal",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 6,
+      "agilidad": 6,
+      "resistencia": 5,
+      "tecnica": 7,
+      "inteligencia": 6
+    },
+    "inventario": {
+      "glock_17": 1
+    },
+    "ubicacion": "petare",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "kevin": {
+    "nombre": "Kevin",
+    "edad": 29,
+    "trabajo": "Sicario",
+    "dinero": 3000.0,
+    "tipo": "criminal",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 10,
+      "agilidad": 6,
+      "resistencia": 8,
+      "tecnica": 4,
+      "inteligencia": 12
+    },
+    "inventario": {
+      "ak47": 1
+    },
+    "ubicacion": "petare",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "dr._marcos_herrera": {
+    "nombre": "Dr. Marcos Herrera",
+    "edad": 45,
+    "trabajo": "Médico Jefe Hospital Vargas",
+    "dinero": 3000.0,
+    "tipo": "civil",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 3,
+      "agilidad": 8,
+      "resistencia": 7,
+      "tecnica": 8,
+      "inteligencia": 7
+    },
+    "inventario": {},
+    "ubicacion": "distrito-capital",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "periodista_ana_flores": {
+    "nombre": "Periodista Ana Flores",
+    "edad": 33,
+    "trabajo": "Periodista de Investigación",
+    "dinero": 800.0,
+    "tipo": "civil",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 3,
+      "agilidad": 4,
+      "resistencia": 4,
+      "tecnica": 6,
+      "inteligencia": 10
+    },
+    "inventario": {},
+    "ubicacion": "miranda",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "don_eduardo_el_bodeguero": {
+    "nombre": "Don Eduardo el Bodeguero",
+    "edad": 60,
+    "trabajo": "Bodeguero",
+    "dinero": 500.0,
+    "tipo": "civil",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 4,
+      "agilidad": 4,
+      "resistencia": 5,
+      "tecnica": 7,
+      "inteligencia": 5
+    },
+    "inventario": {},
+    "ubicacion": "petare",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "padre_miguel_ángel": {
+    "nombre": "Padre Miguel Ángel",
+    "edad": 55,
+    "trabajo": "Sacerdote",
+    "dinero": 200.0,
+    "tipo": "civil",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 2,
+      "agilidad": 8,
+      "resistencia": 7,
+      "tecnica": 7,
+      "inteligencia": 7
+    },
+    "inventario": {},
+    "ubicacion": "petare",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "diego_escobar_colombiano": {
+    "nombre": "Diego Escobar (Colombiano)",
+    "edad": 40,
+    "trabajo": "Traficante Internacional",
+    "dinero": 100000.0,
+    "tipo": "criminal",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 8,
+      "agilidad": 5,
+      "resistencia": 4,
+      "tecnica": 3,
+      "inteligencia": 8
+    },
+    "inventario": {
+      "glock_17": 1
+    },
+    "ubicacion": "medellin",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "agent_smith_dea": {
+    "nombre": "Agent Smith (DEA)",
+    "edad": 38,
+    "trabajo": "Agente DEA",
+    "dinero": 5000.0,
+    "tipo": "policia",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 8,
+      "agilidad": 7,
+      "resistencia": 7,
+      "tecnica": 6,
+      "inteligencia": 9
+    },
+    "inventario": {
+      "glock_17": 1,
+      "esposas": 1
+    },
+    "ubicacion": "miami",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true
+  },
+  "juan_toledo": {
+    "nombre": "Juan Toledo",
+    "edad": 43,
+    "trabajo": "Obrero",
+    "dinero": 94.39,
+    "genero": "hombre",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 7,
+      "agilidad": 4,
+      "resistencia": 4,
+      "tecnica": 6,
+      "inteligencia": 4
+    },
+    "inventario": {},
+    "ubicacion": "23-de-enero",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true,
+    "tipo_familiar": "padre",
+    "es_padre_de": "Thiago Toledo",
+    "hijo_user_id": 751809278645633194
+  },
+  "keila_castro": {
+    "nombre": "Keila Castro",
+    "edad": 40,
+    "trabajo": "Maestra",
+    "dinero": 189.03,
+    "genero": "mujer",
+    "stats": {
+      "hp": 100,
+      "hp_max": 100,
+      "fuerza": 3,
+      "agilidad": 5,
+      "resistencia": 4,
+      "tecnica": 5,
+      "inteligencia": 7
+    },
+    "inventario": {},
+    "ubicacion": "23-de-enero",
+    "canal_actual": null,
+    "vivo": true,
+    "imagen": null,
+    "creado_automaticamente": true,
+    "tipo_familiar": "madre",
+    "es_padre_de": "Thiago Toledo",
+    "hijo_user_id": 751809278645633194
+  }
+}

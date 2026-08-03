@@ -1,0 +1,10 @@
+# Base del bot
+discord.py>=2.4.0
+aiosqlite>=0.20.0
+python-dotenv>=1.0.0
+
+# Opcional — solo si vas a usar DB_BACKEND=mysql
+aiomysql>=0.2.0
+
+# Opcional — solo para la fase del mapa con IA (Gemini)
+# (se llama por API REST con aiohttp, que ya viene con discord.py — no hace falta nada más)

@@ -1,0 +1,54 @@
+{
+  "751809278645633194": {
+    "user_id": 751809278645633194,
+    "nombre": "Thiago Toledo",
+    "edad": 16,
+    "genero": "hombre",
+    "estatus_social": "muy_pobre",
+    "estudios": "primaria",
+    "trabajo_actual": "vendedor_ambulante",
+    "trabajo_display": "Vendedor Ambulante",
+    "backstory": "Thiago Toledo se crio en España, pero tras que mataran a su tio el jefe de un cartel de alli se fueron a Venezuela de nuevo",
+    "barrio": "23-de-enero",
+    "familia": {
+      "padre": {
+        "nombre": "Juan Toledo",
+        "trabajo": "Obrero",
+        "vivo": true
+      },
+      "madre": {
+        "nombre": "Keila Castro",
+        "trabajo": "Maestra",
+        "vivo": true
+      },
+      "vive_con_padres": true,
+      "casa_padres": "23-de-enero:casa-3"
+    },
+    "stats": {
+      "fuerza": 4,
+      "agilidad": 3,
+      "resistencia": 3,
+      "inteligencia": 3,
+      "carisma": 4,
+      "tecnica": 4,
+      "hp": 100,
+      "hp_max": 100
+    },
+    "dinero": 22.15,
+    "inventario": {},
+    "vehiculos": [],
+    "ubicacion": "23-de-enero",
+    "canal_actual": "casa-3-23-de-enero-padres",
+    "ultimo_canal": null,
+    "en_viaje": false,
+    "casa": null,
+    "muerto": false,
+    "arrestado": false,
+    "nivel_busqueda": 0,
+    "deudas": 0,
+    "telefono": null,
+    "creado_ts": 1774078262.5895784,
+    "ultimo_cumple_ts": 1774078237.0038831,
+    "imagen_url": "https://eldiario.com/wp-content/uploads/2020/05/dos.jpg"
+  }
+}
