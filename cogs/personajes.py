@@ -411,18 +411,18 @@ def _embed_personaje(datos: dict, user: discord.Member, aceptado: bool = False) 
     embed.add_field(name="Nombre", value=datos.get("nombre", "?"), inline=True)
     embed.add_field(name="Edad", value=str(datos.get("edad", "?")), inline=True)
     embed.add_field(name="Género", value=datos.get("genero", "?"), inline=True)
-    embed.add_field(name="Estatus", value=datos.get("estatus_social", "?").replace("_", " ").title(), inline=True)
-    embed.add_field(name="Estudios", value=datos.get("estudios", "ninguno").title(), inline=True)
-    embed.add_field(name="Trabajo", value=datos.get("trabajo_display", "Desempleado"), inline=True)
-    embed.add_field(name="Barrio", value=datos.get("barrio", "?"), inline=True)
-    fam = datos.get("familia", {})
+    embed.add_field(name="Estatus", value=(datos.get("estatus_social") or "?").replace("_", " ").title(), inline=True)
+    embed.add_field(name="Estudios", value=(datos.get("estudios") or "ninguno").title(), inline=True)
+    embed.add_field(name="Trabajo", value=datos.get("trabajo_display") or "Desempleado", inline=True)
+    embed.add_field(name="Barrio", value=datos.get("barrio") or "?", inline=True)
+    fam = datos.get("familia") or {}
     if fam.get("padre"):
         vivo = "✅" if fam["padre"].get("vivo", True) else "💀"
-        embed.add_field(name="👨 Padre", value=f"{vivo} {fam['padre']['nombre']}", inline=True)
+        embed.add_field(name="👨 Padre", value=f"{vivo} {fam['padre'].get('nombre', '?')}", inline=True)
     if fam.get("madre"):
         vivo = "✅" if fam["madre"].get("vivo", True) else "💀"
-        embed.add_field(name="👩 Madre", value=f"{vivo} {fam['madre']['nombre']}", inline=True)
-    embed.add_field(name="Historia", value=datos.get("backstory", "Sin historia")[:300], inline=False)
+        embed.add_field(name="👩 Madre", value=f"{vivo} {fam['madre'].get('nombre', '?')}", inline=True)
+    embed.add_field(name="Historia", value=(datos.get("backstory") or "Sin historia")[:300], inline=False)
     stats = datos.get("stats", {})
     if stats:
         st = "  ".join(f"**{k[:3].upper()}** {v}" for k, v in stats.items() if k not in ("hp", "hp_max"))
@@ -524,11 +524,23 @@ class AdminAceptarView(discord.ui.View):
 
         try:
             ch_ok = guild.get_channel(CH_PERSONAJES_OK)
+            if not ch_ok:
+                # No estaba en caché (permisos, o el canal fijo aún no fue
+                # visto por el gateway) — forzamos un fetch directo a la API.
+                try:
+                    ch_ok = await guild.fetch_channel(id_efectivo(guild.id, CH_PERSONAJES_OK))
+                except Exception as e2:
+                    print(f"[WARN] fetch_channel falló para CH_PERSONAJES_OK: {e2}")
+                    ch_ok = None
             if ch_ok:
                 embed = _embed_personaje(self.datos, member, aceptado=True)
                 await ch_ok.send(embed=embed)
+            else:
+                print(f"[WARN] No se pudo resolver el canal de aceptación (id={CH_PERSONAJES_OK}) en guild {guild.id}.")
         except Exception as e:
+            import traceback
             print(f"[WARN] Error enviando a canal OK: {e}")
+            traceback.print_exc()
 
         familia = self.datos.get("familia", {})
         padre = familia.get("padre")
@@ -857,7 +869,38 @@ class Personajes(commands.Cog):
         telefono = datos.get("telefono")
         if telefono:
             embed.add_field(name="📱 Teléfono", value=telefono, inline=True)
+        if datos.get("inmigrante_ilegal"):
+            embed.add_field(name="🛂 Estatus migratorio",
+                            value=f"⚠️ Inmigrante ilegal (origen: {datos.get('pais_origen','?')})", inline=False)
+        if datos.get("deportado"):
+            embed.add_field(name="✈️ Deportado", value=f"Sí — {datos.get('pais_origen','su país de origen')}", inline=False)
         await interaction.response.send_message(embed=embed)
+
+    # ── /ser_inmigrante_ilegal ────────────────────────────────────────────────
+    @app_commands.command(name="ser_inmigrante_ilegal",
+                          description="Marca a tu personaje como inmigrante ilegal (sin papeles en regla)")
+    @app_commands.describe(pais_origen="País de origen de tu personaje")
+    async def ser_inmigrante_ilegal(self, interaction: discord.Interaction, pais_origen: str):
+        datos = await db.get("personajes", str(interaction.user.id))
+        if not datos:
+            return await interaction.response.send_message("❌ Sin personaje.", ephemeral=True)
+        if datos.get("inmigrante_ilegal"):
+            return await interaction.response.send_message("ℹ️ Tu personaje ya está marcado como inmigrante ilegal.", ephemeral=True)
+        await db.update("personajes", str(interaction.user.id), {
+            "inmigrante_ilegal": True, "pais_origen": pais_origen,
+        })
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="🛂 Estatus migratorio actualizado",
+                description=(
+                    f"**{datos['nombre']}** ahora es inmigrante ilegal, originario de **{pais_origen}**.\n\n"
+                    f"⚠️ Esto aumenta el riesgo de ser detenido en un control policial aleatorio, "
+                    f"y un admin puede deportarte de vuelta a tu país con `!deportar`.\n"
+                    f"No podrás tramitar `cedula_venezolana` mientras sigas en esta situación."
+                ),
+                color=discord.Color.orange()
+            )
+        )
 
     @app_commands.command(name="stats", description="Muestra las estadísticas del personaje")
     @app_commands.describe(usuario="Usuario (opcional)")
@@ -866,7 +909,9 @@ class Personajes(commands.Cog):
         datos = await db.get("personajes", str(target.id))
         if not datos:
             return await interaction.response.send_message("❌ Sin personaje.", ephemeral=True)
+        from utils import buffs
         s = datos.get("stats", {})
+        s_efectivas = await buffs.stats_con_buffs(target.id, datos)
         hp = s.get("hp", 100)
         hm = s.get("hp_max", 100)
         barra = "█" * int((hp / hm) * 10) + "░" * (10 - int((hp / hm) * 10))
@@ -874,7 +919,17 @@ class Personajes(commands.Cog):
         embed.add_field(name="❤️ HP", value=f"`{barra}` {hp}/{hm}", inline=False)
         for k, v in s.items():
             if k not in ("hp", "hp_max"):
-                embed.add_field(name=k.title(), value=str(v), inline=True)
+                v_ef = s_efectivas.get(k, v)
+                valor_txt = str(v) if v_ef == v else f"{v} (**{v_ef}** con buffs)"
+                embed.add_field(name=k.title(), value=valor_txt, inline=True)
+        buffs_activos = await buffs.buffs_vigentes(target.id, datos)
+        if buffs_activos:
+            import time as _time
+            txt = "\n".join(
+                f"⚡ +{b['bonus']} {b['stat']} ({int((b['expira_ts']-_time.time())/60)} min restantes)"
+                for b in buffs_activos
+            )
+            embed.add_field(name="🥤 Buffs activos", value=txt, inline=False)
         embed.add_field(name="📚 Estudios", value=datos.get("estudios", "ninguno").title(), inline=True)
         embed.add_field(name="🎂 Edad", value=str(datos.get("edad", "?")), inline=True)
         embed.add_field(name="💼 Trabajo", value=datos.get("trabajo_display", "Desempleado"), inline=True)

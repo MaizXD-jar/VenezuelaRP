@@ -180,7 +180,7 @@ async def refrescar_embed_casa(guild, sector: str, casa_id: str, casa: dict):
             canal = discord.utils.get(guild.text_channels, name=casa.get("canal_nombre", casa_id))
         if not canal:
             return
-        embed, view = _embed_casa(guild, sector, casa_id, casa)
+        embed, view = await _embed_casa(guild, sector, casa_id, casa)
         registro = await db.get("embeds_canales", str(canal.id))
         if registro and registro.get("mensaje_id"):
             try:
@@ -222,6 +222,35 @@ def _es_canal_de_mi_casa(canal_nombre: str, datos: dict) -> bool:
     return canal_nombre.startswith("casa-")
 
 
+# ── Eventos domésticos aleatorios (robo, incendio, fuga de gas) ──────────────
+GAS_ITEMS = {"bombonas_gas", "cocina_gas"}
+BOTIN_ROBO_RANDOM = ["televisor", "laptop", "joyería", "dinero en efectivo", "electrodoméstico", "ropa", "smartphone"]
+
+
+def _es_npc_id(id_str) -> bool:
+    """Los IDs de Discord son numéricos; los de NPC son slugs de texto
+    (ej: 'nelson_domingo'). Así distinguimos un dueño humano de un NPC sin
+    reventar al hacer int(dueño) — ahora los NPCs también pueden ser dueños."""
+    return not str(id_str or "").isdigit()
+
+
+async def _nombre_dueño(guild: discord.Guild, dueño_id) -> str:
+    """Nombre para mostrar de quien sea que sea dueño de la casa: jugador o NPC."""
+    if not dueño_id:
+        return "Desconocido"
+    if _es_npc_id(dueño_id):
+        npc = await db.get("npcs", str(dueño_id))
+        return f"{npc.get('nombre','?')} (NPC)" if npc else "NPC desconocido"
+    m = guild.get_member(int(dueño_id))
+    return m.display_name if m else "Desconocido"
+
+
+def _nivel_seguridad_total(casa: dict) -> int:
+    return (PUERTAS.get(casa.get("puerta", ""), {}).get("nivel", 0)
+            + ALARMAS.get(casa.get("alarma", ""), {}).get("nivel", 0)
+            + CAMARAS.get(casa.get("camaras", ""), {}).get("nivel", 0))
+
+
 class Propiedades(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -230,6 +259,200 @@ class Propiedades(commands.Cog):
     def start_tasks(self):
         if not self.revisar_okupas.is_running():
             self.revisar_okupas.start()
+        if not self.eventos_domesticos.is_running():
+            self.eventos_domesticos.start()
+
+    async def _despachar_emergencia(self, guild: discord.Guild, tipo: str, sector: str,
+                                     canal_casa: discord.TextChannel, mensaje: str):
+        """Llama automáticamente a emergencias (policía/bomberos/médicos según el
+        tipo de incidente) — se usa para incendios, fugas de gas y explosiones,
+        igual que si alguien hubiera marcado 911/112/0800 desde dentro."""
+        from bot import CH_POLICIA_AVISO, ROL_POLICIA
+        ROLES_TIPO = {
+            "incendio": 1359320808509538345,   # ROL_BOMBERO_ID
+            "gas":      1359320808509538345,
+            "explosion":1359320808509538345,
+            "medico":   1359320808585035789,   # ROL_MEDICO_ID
+            "robo":     ROL_POLICIA,
+        }
+        emoji = {"incendio": "🔥", "gas": "🧯", "explosion": "💥", "medico": "🚑", "robo": "🚨"}.get(tipo, "🚨")
+        ch = guild.get_channel(CH_POLICIA_AVISO)
+        if ch:
+            rol = guild.get_role(ROLES_TIPO.get(tipo, ROL_POLICIA))
+            ping = rol.mention if rol else "@Emergencias"
+            try:
+                await ch.send(
+                    f"{emoji} {ping} **LLAMADA AUTOMÁTICA DE EMERGENCIA** ({sector}):\n{mensaje}\n"
+                    f"📍 {canal_casa.mention if canal_casa else sector}"
+                )
+            except Exception:
+                pass
+        try:
+            from cogs.noticias_ia import registrar_evento
+            await registrar_evento(f"emergencia_{tipo}", mensaje)
+        except Exception:
+            pass
+
+    @tasks.loop(hours=3)
+    async def eventos_domesticos(self):
+        """Cada cierto tiempo, revisa las casas con dueño/inquilino y aplica
+        eventos aleatorios independientes de las acciones del jugador:
+        - Robo (allanamiento) mientras la casa está vacía. Probabilidad baja,
+          inversamente proporcional a la seguridad instalada.
+        - Incendio doméstico. Si alguien está dentro puede resultar herido o,
+          en el peor de los casos, morir; siempre se llama a emergencias.
+        - Fuga de gas (solo si hay bombona/cocina de gas). Puede quedar en
+          aviso a tiempo o terminar en explosión si nadie la atiende.
+        """
+        guild = self.bot.guilds[0] if self.bot.guilds else None
+        if not guild:
+            return
+
+        for sector_key in SECTORES:
+            casas = await db.get("casas", sector_key)
+            if not casas:
+                continue
+            for casa_id, casa in list(casas.items()):
+                ocupante_id = casa.get("dueño") or casa.get("inquilino") or casa.get("padres_de")
+                if not ocupante_id:
+                    continue  # casa vacía/sin residente: no hay nada que robar o quemar
+                if _es_npc_id(ocupante_id):
+                    continue  # casas de NPCs no generan estos eventos (no hay jugador a quien afectar)
+
+                canal_id = casa.get("canal_id")
+                canal = guild.get_channel(canal_id) if canal_id else discord.utils.get(
+                    guild.text_channels, name=casa.get("canal_nombre", casa_id))
+                if not canal:
+                    continue
+
+                datos_ocupante = await db.get("personajes", str(ocupante_id))
+                dentro = bool(datos_ocupante and datos_ocupante.get("canal_actual") == casa.get("canal_nombre"))
+                seguridad = _nivel_seguridad_total(casa)
+
+                # ── 1) Robo aleatorio (solo si NO hay nadie dentro) ────────────
+                if not dentro and not casa.get("okupa"):
+                    prob_robo = max(0.01, 0.06 - seguridad * 0.006)
+                    if random.random() < prob_robo:
+                        prob_alerta = _prob_alerta_policia(casa)
+                        if random.random() < prob_alerta:
+                            await self._despachar_emergencia(
+                                guild, "robo", sector_key, canal,
+                                f"Intento de robo detectado por la alarma en **{casa_id}**. La CPNB fue alertada a tiempo."
+                            )
+                        else:
+                            botin = random.sample(BOTIN_ROBO_RANDOM, k=random.randint(1, 2))
+                            valor = round(random.uniform(20, 250), 2)
+                            embed = discord.Embed(
+                                title="🚨 ¡Entraron a robar!",
+                                description=f"Mientras nadie estaba, alguien forzó la entrada de **{casa_id}** "
+                                            f"({sector_key}) y se llevó: {', '.join(botin)} (~${valor:,.2f}).",
+                                color=discord.Color.dark_red()
+                            )
+                            try:
+                                await canal.send(embed=embed)
+                            except Exception:
+                                pass
+                            member = guild.get_member(int(ocupante_id))
+                            if member:
+                                try:
+                                    await member.send(f"🚨 Robaron tu casa **{casa_id}** en **{sector_key}** mientras no estabas.")
+                                except Exception:
+                                    pass
+                            try:
+                                from cogs.noticias_ia import registrar_evento
+                                await registrar_evento("robo_domestico",
+                                    f"Robo sin resolver en una vivienda de {sector_key} ({casa_id}); la policía no llegó a tiempo.")
+                            except Exception:
+                                pass
+                        continue  # no acumular más de un incidente por ciclo en la misma casa
+
+                # ── 2) Fuga de gas / explosión (solo si hay bombona o cocina) ──
+                tiene_gas = bool(GAS_ITEMS & set((datos_ocupante or {}).get("inventario", {}).keys()))
+                if tiene_gas and random.random() < 0.012:
+                    if random.random() < 0.5:
+                        # Se detecta a tiempo: aviso, sin daños, pero se llama igual.
+                        embed = discord.Embed(
+                            title="🧯 Fuga de gas detectada",
+                            description=f"Hay olor a gas en **{casa_id}** ({sector_key}). Ventila la casa y revisa "
+                                        f"la bombona antes de que sea peor.",
+                            color=discord.Color.orange()
+                        )
+                        try:
+                            await canal.send(embed=embed)
+                        except Exception:
+                            pass
+                        await self._despachar_emergencia(
+                            guild, "gas", sector_key, canal,
+                            f"Fuga de gas reportada automáticamente en **{casa_id}**. Se envía unidad a revisar."
+                        )
+                    else:
+                        # Termina en explosión.
+                        gravedad_texto = ""
+                        if dentro:
+                            hp_riesgo = random.random()
+                            member = guild.get_member(int(ocupante_id))
+                            if hp_riesgo < 0.15:
+                                from utils.muerte import procesar_muerte
+                                await procesar_muerte(self.bot, int(ocupante_id), datos_ocupante,
+                                                       causa="Murió en la explosión de gas de su vivienda.", guild=guild)
+                                gravedad_texto = f"💀 **{datos_ocupante.get('nombre','?')} no sobrevivió.**"
+                            else:
+                                from utils.lesiones import agregar_lesion
+                                lesion = random.choice(["herida_critica", "hemorragia", "herida_bala", "hueso_roto"])
+                                await agregar_lesion(int(ocupante_id), lesion)
+                                gravedad_texto = f"🩸 **{datos_ocupante.get('nombre','?')} resultó herido/a** ({lesion.replace('_',' ')})."
+                        else:
+                            gravedad_texto = "La vivienda estaba vacía: solo daños materiales."
+                        embed = discord.Embed(
+                            title="💥 ¡EXPLOSIÓN POR FUGA DE GAS!",
+                            description=f"Una fuga de gas sin atender terminó en explosión en **{casa_id}** ({sector_key}).\n{gravedad_texto}",
+                            color=discord.Color.dark_red()
+                        )
+                        try:
+                            await canal.send(embed=embed)
+                        except Exception:
+                            pass
+                        await self._despachar_emergencia(
+                            guild, "explosion", sector_key, canal,
+                            f"💥 Explosión por fuga de gas en **{casa_id}**. Se requieren bomberos y paramédicos urgente."
+                        )
+                    continue
+
+                # ── 3) Incendio doméstico aleatorio (independiente del gas) ────
+                prob_incendio = max(0.003, 0.01 - seguridad * 0.0008)
+                if random.random() < prob_incendio:
+                    causa = random.choice([
+                        "un cortocircuito eléctrico", "una vela sin apagar", "un descuido en la cocina",
+                        "un cable en mal estado", "el generador eléctrico sobrecalentado",
+                    ])
+                    gravedad_texto = ""
+                    if dentro:
+                        member = guild.get_member(int(ocupante_id))
+                        if random.random() < 0.10:
+                            from utils.muerte import procesar_muerte
+                            await procesar_muerte(self.bot, int(ocupante_id), datos_ocupante,
+                                                   causa="Murió en el incendio de su vivienda.", guild=guild)
+                            gravedad_texto = f"💀 **{datos_ocupante.get('nombre','?')} no logró escapar.**"
+                        else:
+                            from utils.lesiones import agregar_lesion
+                            lesion = random.choice(["contusion", "hueso_roto", "herida_bala"])
+                            await agregar_lesion(int(ocupante_id), lesion)
+                            gravedad_texto = f"🩹 **{datos_ocupante.get('nombre','?')} resultó herido/a** escapando ({lesion.replace('_',' ')})."
+                    else:
+                        gravedad_texto = "La vivienda estaba vacía: solo daños materiales."
+                    embed = discord.Embed(
+                        title="🔥 Incendio doméstico",
+                        description=f"Se desató un incendio en **{casa_id}** ({sector_key}) por {causa}.\n{gravedad_texto}",
+                        color=discord.Color.dark_orange()
+                    )
+                    try:
+                        await canal.send(embed=embed)
+                    except Exception:
+                        pass
+                    await self._despachar_emergencia(
+                        guild, "incendio", sector_key, canal,
+                        f"🔥 Incendio en **{casa_id}**. Se necesitan bomberos con urgencia."
+                    )
 
     @tasks.loop(hours=2)
     async def revisar_okupas(self):
@@ -304,8 +527,7 @@ class Propiedades(commands.Cog):
         )
         for casa_id, casa in list(casas.items())[:20]:
             if casa["dueño"]:
-                m = ctx.guild.get_member(int(casa["dueño"])) if casa["dueño"] else None
-                dueño_nombre = m.display_name if m else "Desconocido"
+                dueño_nombre = await _nombre_dueño(ctx.guild, casa["dueño"])
                 seg = ""
                 if casa.get("puerta"): seg += "🚪"
                 if casa.get("alarma"): seg += "🔔"
@@ -947,13 +1169,13 @@ class Propiedades(commands.Cog):
             if ch_pol:
                 ping = rol_pol.mention if rol_pol else "@Admins"
                 await ch_pol.send(f"🚨 {ping} Robo detectado: **{datos['nombre']}** en {casa_id}, {sector}.")
-            dueño_id = int(casa["dueño"])
-            dueño_member = ctx.guild.get_member(dueño_id)
-            if dueño_member:
-                try:
-                    await dueño_member.send(f"🚨 ¡Alguien intenta robar tu casa **{casa_id}** en **{sector}**! La alarma notificó a la CPNB.")
-                except:
-                    pass
+            if not _es_npc_id(casa["dueño"]):
+                dueño_member = ctx.guild.get_member(int(casa["dueño"]))
+                if dueño_member:
+                    try:
+                        await dueño_member.send(f"🚨 ¡Alguien intenta robar tu casa **{casa_id}** en **{sector}**! La alarma notificó a la CPNB.")
+                    except:
+                        pass
             return await ctx.send("🚨 **¡La alarma se activó!** La CPNB fue notificada.")
 
         if random.random() > prob_exito:
@@ -969,13 +1191,13 @@ class Propiedades(commands.Cog):
             "dinero": round(datos.get("dinero", 0) + valor, 2)
         })
 
-        dueño_id = int(casa["dueño"])
-        dueño_member = ctx.guild.get_member(dueño_id)
-        if dueño_member:
-            try:
-                await dueño_member.send(f"🚨 ¡Tu casa fue robada! **{casa_id}** en **{sector}**. Robaron: {', '.join(botin)}")
-            except:
-                pass
+        if not _es_npc_id(casa["dueño"]):
+            dueño_member = ctx.guild.get_member(int(casa["dueño"]))
+            if dueño_member:
+                try:
+                    await dueño_member.send(f"🚨 ¡Tu casa fue robada! **{casa_id}** en **{sector}**. Robaron: {', '.join(botin)}")
+                except:
+                    pass
 
         await ctx.send(f"✅ **¡Robo exitoso!** Robaste: {', '.join(botin)}. +${valor:.2f}")
 
@@ -1021,6 +1243,148 @@ class Propiedades(commands.Cog):
             )
         embed.set_footer(text="Usa los comandos dentro del canal de tu casa")
         await ctx.send(embed=embed)
+
+    # ── !cerrar_casa ─────────────────────────────────────────────────────────
+    @commands.command(name="cerrar_casa", aliases=["dejar_casa", "abandonar_casa"])
+    async def cerrar_casa(self, ctx, sector: str = None, numero: int = None):
+        """Cierra/abandona definitivamente una casa: si eres dueño o inquilino,
+        renuncias a la propiedad (queda libre); si vives en la casa de tus
+        padres (personaje menor de edad incluido — no hay restricción por
+        edad para esto), te vas de esa casa y dejas de ser residente.
+
+        Uso: `!cerrar_casa` (dentro del canal de la casa) o
+             `!cerrar_casa <sector> <numero>` desde cualquier lugar.
+        """
+        datos = await db.get("personajes", str(ctx.author.id))
+        if not datos:
+            return await ctx.send("❌ Sin personaje.")
+
+        if sector and numero is not None:
+            sector = sector.lower().replace(" ", "-")
+            casa_id = f"casa-{numero}"
+            casas = await db.get("casas", sector) or {}
+            casa = casas.get(casa_id)
+            if not casa:
+                return await ctx.send(f"❌ No existe {casa_id} en {sector}.")
+        else:
+            casa_data = await self._get_casa_de_canal(datos.get("canal_actual", ""))
+            if not casa_data:
+                return await ctx.send("❌ Usa `!cerrar_casa <sector> <numero>`, o hazlo dentro del canal de tu casa.")
+            sector, casa_id, casa, casas = casa_data
+
+        uid = str(ctx.author.id)
+        if not _es_residente(casa, ctx.author.id):
+            return await ctx.send("❌ No vives en esa casa.")
+
+        guild = ctx.guild
+        canal_id = casa.get("canal_id")
+        canal = guild.get_channel(canal_id) if canal_id else None
+
+        if casa.get("dueño") == uid:
+            casa["dueño"] = None
+            casa["puerta"] = None
+            casa["alarma"] = None
+            casa["camaras"] = None
+            casa["en_venta"] = True
+            casa["estado"] = "disponible"
+            mensaje = f"🏠 **{datos['nombre']}** renunció a la propiedad de **{casa_id}** en **{sector}**. Queda disponible para la venta."
+        elif casa.get("inquilino") == uid:
+            casa["inquilino"] = None
+            casa["estado"] = "disponible" if not casa.get("dueño") else "ocupada"
+            mensaje = f"🏠 **{datos['nombre']}** terminó su alquiler de **{casa_id}** en **{sector}**."
+        elif casa.get("okupa") == uid:
+            casa["okupa"] = None
+            casa["estado"] = "disponible"
+            mensaje = f"🚨 **{datos['nombre']}** abandonó la casa okupada **{casa_id}** en **{sector}**."
+        elif casa.get("padres_de") == uid:
+            casa["padres_de"] = None
+            casa["estado"] = "disponible"
+            mensaje = f"🏠 **{datos['nombre']}** (menor de edad: {datos.get('edad','?')} años) se mudó de la casa de sus padres en **{sector}**."
+        else:
+            mensaje = f"🏠 **{datos['nombre']}** dejó de residir en **{casa_id}** en **{sector}**."
+
+        residentes = [r for r in casa.get("residentes", []) if r != uid]
+        casa["residentes"] = residentes
+        invitados = [i for i in casa.get("invitados", []) if i != uid]
+        casa["invitados"] = invitados
+        casas[casa_id] = casa
+        await db.set("casas", sector, casas)
+
+        mis_casas = [c for c in datos.get("casas", []) if not c.startswith(f"{sector}:{casa_id}")]
+        await db.update("personajes", str(ctx.author.id), {"casas": mis_casas})
+
+        if canal:
+            try:
+                await canal.set_permissions(ctx.author, overwrite=None)
+            except Exception:
+                pass
+
+        await ctx.send(embed=discord.Embed(description=mensaje, color=discord.Color.orange()))
+        await refrescar_embed_casa(guild, sector, casa_id, casa)
+
+    # ── !convertir_tienda ────────────────────────────────────────────────────
+    @commands.command(name="convertir_tienda", aliases=["convertir_negocio"])
+    async def convertir_tienda(self, ctx, sector: str = None, numero: int = None):
+        """Convierte una casa tuya (que no estés usando activamente como
+        vivienda) en el local físico de un negocio PEQUEÑO. Necesitas haber
+        creado antes un negocio pequeño con `!crear_empresa pequeno ...`
+        (los pequeños no vienen con sede propia — esta es la forma de
+        conseguirle una)."""
+        datos = await db.get("personajes", str(ctx.author.id))
+        if not datos:
+            return await ctx.send("❌ Sin personaje.")
+
+        if sector and numero is not None:
+            sector = sector.lower().replace(" ", "-")
+            casa_id = f"casa-{numero}"
+            casas = await db.get("casas", sector) or {}
+            casa = casas.get(casa_id)
+            if not casa:
+                return await ctx.send(f"❌ No existe {casa_id} en {sector}.")
+        else:
+            casa_data = await self._get_casa_de_canal(datos.get("canal_actual", ""))
+            if not casa_data:
+                return await ctx.send("❌ Usa `!convertir_tienda <sector> <numero>`, o hazlo dentro del canal de tu casa.")
+            sector, casa_id, casa, casas = casa_data
+
+        if casa.get("dueño") != str(ctx.author.id):
+            return await ctx.send("❌ Solo el dueño de la casa puede convertirla en tienda.")
+        if casa.get("es_tienda"):
+            return await ctx.send("ℹ️ Esa casa ya funciona como tienda.")
+
+        from cogs.empresas import _empresa_de_usuario, TAMANOS_EMPRESA
+        eid, empresa = await _empresa_de_usuario(ctx.author.id)
+        if not empresa:
+            return await ctx.send("❌ Primero crea un negocio con `!crear_empresa pequeno <tipo> <sector> <nombre>`.")
+        if empresa.get("tamaño") != "pequeno":
+            return await ctx.send("❌ Solo los negocios **pequeños** usan una casa como local — los medianos/grandes ya tienen sede propia.")
+        if empresa.get("sede_canal_id"):
+            return await ctx.send("❌ Tu negocio ya tiene un local asignado.")
+
+        canal_id = casa.get("canal_id")
+        canal = ctx.guild.get_channel(canal_id) if canal_id else discord.utils.get(ctx.guild.text_channels, name=casa.get("canal_nombre", casa_id))
+
+        casa["es_tienda"] = True
+        casa["tienda_empresa_id"] = eid
+        casas[casa_id] = casa
+        await db.set("casas", sector, casas)
+
+        empresa["sede_canal_id"] = canal.id if canal else None
+        empresa["sede_en_casa"] = f"{sector}:{casa_id}"
+        await db.set("empresas", eid, empresa)
+
+        if canal:
+            try:
+                await canal.edit(topic=f"🏪 {empresa['nombre']} (tiendita) — dueño: {datos.get('nombre','?')} | también sigue siendo su casa")
+            except Exception:
+                pass
+            await canal.send(embed=discord.Embed(
+                title="🏪 ¡Tu casa ahora también es una tienda!",
+                description=f"**{casa_id}** en **{sector}** es el local físico de **{empresa['nombre']}**.\n"
+                            f"Usa `!empresa` para ver el estado del negocio.",
+                color=discord.Color.gold()
+            ))
+        await ctx.send(f"✅ Convertiste **{casa_id}** ({sector}) en el local de **{empresa['nombre']}**.")
 
     @commands.command(name="seguridad_casa")
     async def seguridad_casa(self, ctx):

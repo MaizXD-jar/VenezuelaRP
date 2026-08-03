@@ -12,12 +12,14 @@ cogs/embeds_canales.py — Embeds informativos en TODOS los canales.
 Los embeds se anclan (pin) y se guarda su ID en la tabla `embeds_canales` para
 poder editarlos en vez de duplicarlos cada vez.
 """
+import asyncio
+import re
 import discord
 from discord.ext import commands
 from discord import app_commands
 
 from utils import db
-from utils.mapa import SECTORES, get_sector_de_canal, es_canal_casa
+from utils.mapa import SECTORES, get_sector_de_canal, es_canal_casa, canal_con_sector
 
 # ── Texto por tipo de canal ──────────────────────────────────────────────────
 INFO_TIPOS = {
@@ -147,7 +149,7 @@ def _embed_canal(canal_nombre: str, ctx_info: dict) -> discord.Embed:
 
     peligro = cinfo.get("peligro", sec.get("peligro", 1))
     embed = discord.Embed(
-        title=f"{cinfo.get('emoji', plantilla['emoji'])} {canal_nombre.replace('-', ' ').title()}",
+        title=f"{cinfo.get('emoji', plantilla['emoji'])} {canal_con_sector(canal_nombre, sec_key)}",
         description=plantilla["desc"],
         color=discord.Color.from_rgb(46, 204, 113) if peligro <= 2 else
               (discord.Color.orange() if peligro <= 3 else discord.Color.red())
@@ -193,7 +195,19 @@ class CasaView(discord.ui.View):
         )
 
 
-def _embed_casa(guild: discord.Guild, sector: str, casa_id: str, casa: dict) -> tuple[discord.Embed, CasaView]:
+async def _nombre_ocupante(guild: discord.Guild, id_str) -> str | None:
+    """Nombre a mostrar sea el dueño/inquilino/okupa un jugador o un NPC (los
+    NPCs ahora también pueden ser dueños de casa, ver cogs/npc_vida.py)."""
+    if not id_str:
+        return None
+    if not str(id_str).isdigit():
+        npc = await db.get("npcs", str(id_str))
+        return f"{npc.get('nombre','?')} (NPC)" if npc else None
+    m = guild.get_member(int(id_str))
+    return m.display_name if m else None
+
+
+async def _embed_casa(guild: discord.Guild, sector: str, casa_id: str, casa: dict) -> tuple[discord.Embed, CasaView]:
     numero = int(casa_id.replace("casa-", "") or 0)
     sec = SECTORES.get(sector, {})
 
@@ -205,20 +219,20 @@ def _embed_casa(guild: discord.Guild, sector: str, casa_id: str, casa: dict) -> 
     disponible = not (dueño_id or inquilino_id or okupa_id or padres_de)
 
     if dueño_id:
-        m = guild.get_member(int(dueño_id))
-        estado = f"🔒 **Propiedad de {m.display_name if m else 'Desconocido'}**"
+        nombre_m = await _nombre_ocupante(guild, dueño_id)
+        estado = f"🔒 **Propiedad de {nombre_m or 'Desconocido'}**"
         color = discord.Color.dark_gold()
     elif padres_de:
-        m = guild.get_member(int(padres_de))
-        estado = f"👨‍👩‍👦 **Casa familiar** (padres de {m.display_name if m else 'un personaje'})"
+        nombre_m = await _nombre_ocupante(guild, padres_de)
+        estado = f"👨‍👩‍👦 **Casa familiar** (padres de {nombre_m or 'un personaje'})"
         color = discord.Color.blurple()
     elif inquilino_id:
-        m = guild.get_member(int(inquilino_id))
-        estado = f"🔑 **Alquilada por {m.display_name if m else 'Desconocido'}**"
+        nombre_m = await _nombre_ocupante(guild, inquilino_id)
+        estado = f"🔑 **Alquilada por {nombre_m or 'Desconocido'}**"
         color = discord.Color.teal()
     elif okupa_id:
-        m = guild.get_member(int(okupa_id))
-        estado = f"🚨 **Ocupada ilegalmente** por {m.display_name if m else 'un okupa'}"
+        nombre_m = await _nombre_ocupante(guild, okupa_id)
+        estado = f"🚨 **Ocupada ilegalmente** por {nombre_m or 'un okupa'}"
         color = discord.Color.red()
     else:
         estado = "✅ **Disponible**"
@@ -250,7 +264,7 @@ def _embed_casa(guild: discord.Guild, sector: str, casa_id: str, casa: dict) -> 
     else:
         residentes = casa.get("residentes", [])
         if residentes:
-            nombres = [guild.get_member(int(r)).display_name for r in residentes if guild.get_member(int(r))]
+            nombres = [n for n in [await _nombre_ocupante(guild, r) for r in residentes] if n]
             if nombres:
                 embed.add_field(name="👥 Residentes", value=", ".join(nombres), inline=False)
         embed.set_footer(text="Comandos del residente: !cerrar_puerta · !abrir_puerta · !invitar @alguien · !seguridad_casa")
@@ -286,53 +300,123 @@ class EmbedsCanales(commands.Cog):
             return "error"
 
     @app_commands.command(name="generar_embeds",
-                          description="[ADMIN] Publica un embed informativo en TODOS los canales del mapa y casas")
-    async def generar_embeds(self, interaction: discord.Interaction):
+                          description="[ADMIN] Publica/actualiza los embeds informativos de los canales de RP")
+    @app_commands.describe(tipo="Qué tipo de embeds regenerar (por defecto: todo)")
+    @app_commands.choices(tipo=[
+        app_commands.Choice(name="Todo", value="todo"),
+        app_commands.Choice(name="General (calles, comercios, etc.)", value="general"),
+        app_commands.Choice(name="Casas", value="casas"),
+        app_commands.Choice(name="Sedes de empresas", value="sedes"),
+    ])
+    async def generar_embeds(self, interaction: discord.Interaction, tipo: app_commands.Choice[str] = None):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("❌ Solo admins.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
 
+        modo = tipo.value if tipo else "todo"
         guild = interaction.guild
-        creados = editados = errores = casas_ok = 0
+        creados = editados = errores = casas_ok = sedes_ok = 0
 
-        # 1) Canales normales del mapa
-        for canal in guild.text_channels:
-            ctx_info = _info_para_canal(canal.name)
-            if not ctx_info:
-                continue
-            res = await self._publicar_o_editar(canal, _embed_canal(canal.name, ctx_info))
-            if res == "creado": creados += 1
-            elif res == "editado": editados += 1
-            else: errores += 1
+        # 1) Canales normales del mapa (calles, mercados, comisarías, celdas...)
+        if modo in ("todo", "general"):
+            for canal in guild.text_channels:
+                ctx_info = _info_para_canal(canal.name)
+                if not ctx_info:
+                    continue
+                res = await self._publicar_o_editar(canal, _embed_canal(canal.name, ctx_info))
+                if res == "creado": creados += 1
+                elif res == "editado": editados += 1
+                else: errores += 1
 
         # 2) Canales de casas (embed vivo con estado y botones)
-        for sector_key in SECTORES:
-            casas = await db.get("casas", sector_key)
-            if not casas:
-                continue
-            for casa_id, casa in casas.items():
-                canal = None
-                if casa.get("canal_id"):
-                    canal = guild.get_channel(casa["canal_id"])
-                if not canal:
-                    canal = discord.utils.get(guild.text_channels, name=casa.get("canal_nombre", casa_id))
+        if modo in ("todo", "casas"):
+            for sector_key in SECTORES:
+                casas = await db.get("casas", sector_key)
+                if not casas:
+                    continue
+                for casa_id, casa in casas.items():
+                    canal = None
+                    if casa.get("canal_id"):
+                        canal = guild.get_channel(casa["canal_id"])
+                    if not canal:
+                        canal = discord.utils.get(guild.text_channels, name=casa.get("canal_nombre", casa_id))
+                    if not canal:
+                        continue
+                    embed, view = await _embed_casa(guild, sector_key, casa_id, casa)
+                    res = await self._publicar_o_editar(canal, embed, view)
+                    if res != "error":
+                        casas_ok += 1
+                    else:
+                        errores += 1
+
+        # 3) Sedes de empresas (canal dedicado por empresa registrada)
+        if modo in ("todo", "sedes"):
+            try:
+                empresas = await db.all("empresas")
+            except Exception:
+                empresas = {}
+            for eid, empresa in empresas.items():
+                canal = guild.get_channel(empresa.get("sede_canal_id")) if empresa.get("sede_canal_id") else None
                 if not canal:
                     continue
-                embed, view = _embed_casa(guild, sector_key, casa_id, casa)
-                res = await self._publicar_o_editar(canal, embed, view)
+                sector_empresa = empresa.get("sector", "")
+                display_empresa = SECTORES.get(sector_empresa, {}).get("display", sector_empresa or "?")
+                embed = discord.Embed(
+                    title=f"🏢 Sede de {empresa.get('nombre', eid)}",
+                    description=f"Empresa registrada en **{display_empresa}**.",
+                    color=discord.Color.dark_teal()
+                )
+                embed.add_field(name="📍 Sector", value=f"{display_empresa} ({sector_empresa})", inline=True)
+                embed.add_field(name="🧾 Dueño", value=f"<@{empresa.get('dueño')}>" if empresa.get("dueño") else "?", inline=True)
+                embed.add_field(name="📋 Comandos", value="`!empresa` · `!contratar @alguien` · `!depositar_empresa` · `!retirar_empresa`", inline=False)
+                res = await self._publicar_o_editar(canal, embed)
                 if res != "error":
-                    casas_ok += 1
+                    sedes_ok += 1
                 else:
                     errores += 1
 
         await interaction.followup.send(
-            f"✅ **Embeds generados**\n"
+            f"✅ **Embeds generados** (tipo: `{modo}`)\n"
             f"🆕 Creados: {creados}\n"
             f"♻️ Actualizados: {editados}\n"
             f"🏠 Casas: {casas_ok}\n"
+            f"🏢 Sedes de empresas: {sedes_ok}\n"
             f"⚠️ Errores: {errores}",
             ephemeral=True
         )
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, canal: discord.abc.GuildChannel):
+        """Cuando se crea un canal nuevo que coincide con el mapa (o es una
+        casa registrada), publica automáticamente su embed informativo,
+        igual que hace /generar_embeds."""
+        if not isinstance(canal, discord.TextChannel):
+            return
+
+        # Pequeña espera para que el canal termine de configurarse (categoría,
+        # permisos, etc.) antes de publicar el embed.
+        await asyncio.sleep(2)
+
+        try:
+            # ¿Es un canal de casa? (formato "casa-{N}-{sector}[-nombre]")
+            if es_canal_casa(canal.name):
+                sector_key = get_sector_de_canal(canal.name)
+                m = re.match(r"^casa-(\d+)", canal.name)
+                if sector_key and m:
+                    casa_id = f"casa-{m.group(1)}"
+                    casas = await db.get("casas", sector_key) or {}
+                    casa = casas.get(casa_id)
+                    if casa:
+                        embed, view = await _embed_casa(canal.guild, sector_key, casa_id, casa)
+                        await self._publicar_o_editar(canal, embed, view)
+                        return
+
+            # ¿Es un canal normal del mapa?
+            ctx_info = _info_para_canal(canal.name)
+            if ctx_info:
+                await self._publicar_o_editar(canal, _embed_canal(canal.name, ctx_info))
+        except Exception as e:
+            print(f"[WARN] on_guild_channel_create embed para #{canal.name}: {e}")
 
     @app_commands.command(name="actualizar_embed_casa",
                           description="[ADMIN] Refresca el embed de una casa concreta")
@@ -354,7 +438,7 @@ class EmbedsCanales(commands.Cog):
         if not canal:
             return await interaction.response.send_message("❌ Esa casa no tiene canal creado.", ephemeral=True)
 
-        embed, view = _embed_casa(guild, sector, casa_id, casa)
+        embed, view = await _embed_casa(guild, sector, casa_id, casa)
         await self._publicar_o_editar(canal, embed, view)
         await interaction.response.send_message(f"✅ Embed de {casa_id} actualizado en {canal.mention}.", ephemeral=True)
 

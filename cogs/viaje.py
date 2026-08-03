@@ -12,7 +12,8 @@ import asyncio
 import random
 import time
 from utils import db
-from utils.mapa import SECTORES, TIEMPOS_VIAJE, get_tiempo, get_sector_de_canal, get_canal_info, metodos_disponibles, mejor_ruta, es_canal_casa
+from utils.mapa import (SECTORES, TIEMPOS_VIAJE, get_tiempo, get_sector_de_canal, get_canal_info,
+                        metodos_disponibles, mejor_ruta, es_canal_casa, canal_con_sector)
 
 ROL_POLICIA_ID  = 1359320808526450780
 ROL_BOMBERO_ID  = 1359320808509538345
@@ -216,8 +217,8 @@ class Viaje(commands.Cog):
             peligro = canal_info.get("peligro", sec_info.get("peligro", 1))
 
             embed = discord.Embed(
-                title=f"{c_emoji} Llegaste a {canal_nombre}",
-                description=f"**Sector:** {emoji} {display} | **Método:** {viaje['metodo']}",
+                title=f"{c_emoji} Llegaste a {canal_con_sector(canal_nombre, sector)}",
+                description=f"**Sector:** {emoji} {display} ({sector}) | **Método:** {viaje['metodo']}",
                 color=discord.Color.green()
             )
             if peligro >= 4:
@@ -346,6 +347,10 @@ class Viaje(commands.Cog):
             return await reply("❌ No tienes personaje.", ephemeral=True)
         if datos.get("muerto"):
             return await reply("❌ Tu personaje está muerto.", ephemeral=True)
+        if datos.get("deportado"):
+            return await reply(
+                "❌ Tu personaje fue deportado y no puede viajar dentro del país. "
+                "Un admin puede permitirte volver con `!permitir_reingreso`.", ephemeral=True)
         if datos.get("arrestado"):
             canal_actual = datos.get("canal_actual", "")
             if not _es_viaje_prision(canal_actual, destino):
@@ -445,15 +450,26 @@ class Viaje(commands.Cog):
             minutos = max(1, int(minutos * 0.40))
 
         # Verificar transporte público disponible
-        if metodo == "metro":
+        # ANTES: solo se comprobaba que el SECTOR tuviera en algún lado un canal
+        # de metro/tren/aeropuerto, así que podías "viajar en metro" estando en
+        # una casa o una calle cualquiera del sector, sin haber pisado la
+        # estación. Ahora hace falta estar FÍSICAMENTE en el canal exacto de
+        # la estación correspondiente.
+        KEYWORDS_ESTACION = {"metro": "metro", "tren": "tren", "avion": "aeropuerto"}
+        if metodo in KEYWORDS_ESTACION:
+            kw = KEYWORDS_ESTACION[metodo]
             sec_canales = SECTORES.get(sector_origen, {}).get("canales", {})
-            if not any("metro" in c for c in sec_canales):
-                return await reply(f"❌ No hay metro en **{sector_origen}**.", ephemeral=True)
-        if metodo in ("tren", "avion"):
-            sec_canales = SECTORES.get(sector_origen, {}).get("canales", {})
-            kw = "tren" if metodo == "tren" else "aeropuerto"
-            if not any(kw in c for c in sec_canales):
-                return await reply(f"❌ No hay {metodo} disponible en **{sector_origen}**.", ephemeral=True)
+            estaciones_sector = [c for c in sec_canales if kw in c]
+            if not estaciones_sector:
+                nombre_metodo = {"metro": "metro", "tren": "tren", "avion": "aeropuerto"}[metodo]
+                return await reply(f"❌ No hay {nombre_metodo} en **{sector_origen}**.", ephemeral=True)
+            if kw not in canal_actual_nombre:
+                estaciones_txt = ", ".join(f"`{e}`" for e in estaciones_sector)
+                return await reply(
+                    f"❌ Para viajar en {metodo} necesitas estar EN la estación, no solo en el sector.\n"
+                    f"Ve primero a: {estaciones_txt} (usa `/viajar destino:<estación>` a pie).",
+                    ephemeral=True
+                )
 
         # Protesta aleatoria
         protesta = False
@@ -481,7 +497,7 @@ class Viaje(commands.Cog):
 
         sec_dest_info = SECTORES.get(sector_destino, {})
         desc = (
-            f"**Destino:** {sec_dest_info.get('emoji','')} `{destino}` ({sector_destino})\n"
+            f"**Destino:** {sec_dest_info.get('emoji','')} `{canal_con_sector(destino, sector_destino)}`\n"
             f"**Método:** {icono} {metodo}\n"
             f"**Duración:** ~{minutos} min"
         )

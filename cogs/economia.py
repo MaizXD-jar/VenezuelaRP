@@ -9,6 +9,7 @@ import random
 import asyncio
 from utils import db
 from utils import impuestos
+from utils import buffs
 
 CH_PRECIOS = 1359320811420520609
 
@@ -33,6 +34,16 @@ TIENDA_ITEMS = {
     "pollo_completo":      {"precio": 8.0,    "categoria": "comida",  "descripcion": "+20 HP",  "ubicaciones": ["restaurante","pollos","tasca","supermercado","automercado","mercado"]},
     "bolsa_arroz":         {"precio": 3.0,    "categoria": "comida",  "descripcion": "Alimento hogar", "ubicaciones": ["bodega","mercado","supermercado","automercado"]},
     "bolsa_caraotas":      {"precio": 2.0,    "categoria": "comida",  "descripcion": "Alimento hogar", "ubicaciones": ["bodega","mercado","supermercado","automercado"]},
+
+    # ── ENERGIZANTES / BUFFS TEMPORALES ──────────────────────────────────────
+    "monster_energy":      {"precio": 3.5,    "categoria": "comida",  "descripcion": "+3 Agilidad temporal (45 min)",
+                            "ubicaciones": ["bodega","tasca","mercado","supermercado","automercado","cualquiera"]},
+    "cafe_energizante":    {"precio": 2.0,    "categoria": "comida",  "descripcion": "+2 Inteligencia temporal (30 min)",
+                            "ubicaciones": ["cafe","tasca","restaurante","bodega","cualquiera"]},
+    "barra_proteina":      {"precio": 2.5,    "categoria": "comida",  "descripcion": "+2 Fuerza temporal (40 min)",
+                            "ubicaciones": ["supermercado","automercado","deporte","mercado","cualquiera"]},
+    "bebida_isotonica":    {"precio": 2.0,    "categoria": "comida",  "descripcion": "+3 Resistencia temporal (35 min)",
+                            "ubicaciones": ["supermercado","automercado","deporte","mercado","cualquiera"]},
 
     # ── MEDICINA ──────────────────────────────────────────────────────────────
     "ibuprofeno":          {"precio": 3.0,    "categoria": "medicina","descripcion": "Analgésico", "ubicaciones": ["farmacia","farmatodo","clinica","hospital","drogueria"]},
@@ -234,9 +245,21 @@ class Economia(commands.Cog):
 
     # ── /tienda ───────────────────────────────────────────────────────────────
     @app_commands.command(name="tienda", description="Muestra los artículos disponibles en la tienda del lugar actual")
-    @app_commands.describe(categoria="Categoría: comida, medicina, herramienta, ropa, tech, vehiculo, documento, hogar, misc, arma")
-    async def tienda_slash(self, interaction: discord.Interaction, categoria: str = None):
-        await self._mostrar_tienda(interaction, categoria)
+    @app_commands.describe(categoria="Elige el tipo de tienda/categoría (opcional, deja vacío para ver todo)")
+    @app_commands.choices(categoria=[
+        app_commands.Choice(name="🍽️ Comida", value="comida"),
+        app_commands.Choice(name="💊 Medicina", value="medicina"),
+        app_commands.Choice(name="🔧 Herramientas", value="herramienta"),
+        app_commands.Choice(name="👕 Ropa", value="ropa"),
+        app_commands.Choice(name="📱 Tecnología", value="tech"),
+        app_commands.Choice(name="🚲 Vehículos", value="vehiculo"),
+        app_commands.Choice(name="📄 Documentos", value="documento"),
+        app_commands.Choice(name="🏠 Hogar", value="hogar"),
+        app_commands.Choice(name="🗡️ Armas", value="arma"),
+        app_commands.Choice(name="🎒 Misceláneos", value="misc"),
+    ])
+    async def tienda_slash(self, interaction: discord.Interaction, categoria: app_commands.Choice[str] = None):
+        await self._mostrar_tienda(interaction, categoria.value if categoria else None)
 
     @commands.command(name="tienda")
     async def tienda_prefix(self, ctx, categoria: str = None):
@@ -323,6 +346,12 @@ class Economia(commands.Cog):
         datos = await db.get("personajes", str(user.id))
         if not datos:
             return await reply("❌ No tienes personaje.", ephemeral=True)
+
+        if item == "cedula_venezolana" and datos.get("inmigrante_ilegal") and not datos.get("residencia_legal"):
+            return await reply(
+                "❌ No puedes tramitar la cédula venezolana mientras seas inmigrante ilegal sin residencia legal.",
+                ephemeral=True
+            )
 
         canal_actual = datos.get("canal_actual", "")
         ubicaciones = TIENDA_ITEMS[item].get("ubicaciones", ["cualquiera"])
@@ -449,11 +478,16 @@ class Economia(commands.Cog):
         hp_max = stats.get("hp_max", 100)
 
         efecto = EFECTOS_USO.get(item)
+        buff_info = buffs.BUFFS_CONSUMIBLES.get(item)
+        mensaje = None
         if efecto:
             hp_nuevo = min(hp_max, hp + efecto["hp"])
             stats["hp"] = hp_nuevo
             mensaje = efecto["msg"] + f" HP: {hp_nuevo}/{hp_max}"
-        else:
+        if buff_info:
+            buff_msg = await buffs.aplicar_buff(user.id, item)
+            mensaje = f"{mensaje}\n{buff_msg}" if mensaje else buff_msg
+        if not mensaje:
             return await reply(f"ℹ️ `{item.replace('_', ' ')}` no se usa directamente — es parte de tu equipo.")
 
         inv[item] -= 1

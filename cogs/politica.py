@@ -113,11 +113,16 @@ class Politica(commands.Cog):
         await ctx.send(embed=embed)
 
     # ── /votar ────────────────────────────────────────────────────────────────
-    @commands.command(name="votar")
+    @commands.command(name="votar_antiguo")
     async def votar(self, ctx, candidato: discord.Member):
-        """Vota por un candidato. /votar @candidato"""
+        """OBSOLETO: el sistema de elecciones vive ahora en cogs/elecciones.py,
+        que es automático (cada 4 semanas del rol) y persiste en base de datos.
+        Este guardaba los candidatos en memoria y se perdían al reiniciar el bot.
+        Usa /votar."""
+        await ctx.send("ℹ️ Este comando quedó obsoleto. Usa `/votar` — las elecciones ahora "
+                       "son automáticas cada 4 semanas del rol. Mira `/estado_elecciones`.")
         if not self.elecciones_activas:
-            return await ctx.send("❌ No hay elecciones activas.")
+            return
 
         datos = await db.get("personajes", str(ctx.author.id))
         if not datos:

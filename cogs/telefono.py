@@ -6,12 +6,80 @@ import discord
 from discord.ext import commands
 import asyncio
 import random
+import re
 from utils import db
 
 # Formato del canal privado: 📱tel-{nombre1}-{nombre2}
 # Guardamos activos: {frozenset(id1, id2): channel_id}
 conversaciones_activas: dict[frozenset, int] = {}
 llamadas_activas: dict[int, int] = {}  # caller_id: called_id
+
+# ── Números de emergencia ─────────────────────────────────────────────────────
+# Marcar cualquiera de estos números despacha una llamada automática a
+# emergencias (policía/bomberos/médicos), sin necesidad de que exista un
+# personaje "dueño" de ese número.
+NUMEROS_EMERGENCIA = {"911", "112", "0800"}
+
+
+def _normalizar_numero(texto: str) -> str:
+    """Deja solo dígitos y guiones para poder comparar números de teléfono
+    escritos de formas distintas (con o sin guion, con o sin espacios)."""
+    return re.sub(r"[^0-9]", "", texto or "")
+
+
+async def _buscar_personaje_por_numero(numero: str):
+    """Busca en TODOS los personajes registrados uno cuyo teléfono coincida.
+    Devuelve (user_id, datos) o (None, None) si no existe."""
+    objetivo = _normalizar_numero(numero)
+    if not objetivo:
+        return None, None
+    todos = await db.all("personajes")
+    for uid, datos in todos.items():
+        tel = _normalizar_numero(datos.get("telefono", ""))
+        if tel and tel == objetivo:
+            return int(uid), datos
+    return None, None
+
+
+async def _resolver_destino_llamada(ctx, numero_o_mencion: str):
+    """Resuelve a quién se está llamando/mensajeando a partir de lo que el
+    jugador escribió: puede ser una @mención de Discord, un número de
+    teléfono marcado a mano, uno de los números de emergencia, o directamente
+    su PROPIO número (se puede llamar a uno mismo).
+
+    Devuelve una tupla (modo, valor):
+    - ("emergencia", None)                     -> marcó 911/112/0800
+    - ("miembro", discord.Member)               -> objetivo válido (puede ser el propio autor)
+    - ("error", "mensaje de error para mostrar")
+    Solo se puede llamar/mensajear a PERSONAS con personaje registrado — nunca
+    a un número que no pertenezca a nadie ni a un NPC.
+    """
+    texto = (numero_o_mencion or "").strip()
+    limpio = _normalizar_numero(texto)
+
+    if limpio in NUMEROS_EMERGENCIA or texto in NUMEROS_EMERGENCIA:
+        return "emergencia", None
+
+    # ¿Es una @mención de Discord?
+    match = re.match(r"^<@!?(\d+)>$", texto)
+    if match:
+        member = ctx.guild.get_member(int(match.group(1)))
+        if not member:
+            return "error", "❌ No encuentro a ese usuario en el servidor."
+        return "miembro", member
+
+    # ¿Escribió directamente un número de teléfono? (el suyo propio incluido)
+    if limpio and len(limpio) >= 6:
+        uid, datos_obj = await _buscar_personaje_por_numero(limpio)
+        if not uid:
+            return "error", f"❌ El número `{texto}` no está registrado a ningún personaje."
+        member = ctx.guild.get_member(uid)
+        if not member:
+            return "error", "❌ Ese número pertenece a alguien que ya no está en el servidor."
+        return "miembro", member
+
+    return "error", ("❌ Marca un número de teléfono (el tuyo, el de otro personaje, o 911/112/0800), "
+                     "o menciona a alguien con @usuario.")
 
 class LlamadaView(discord.ui.View):
     def __init__(self, llamante_id: int, receptor_id: int, canal_id: int, datos_ll: dict, datos_rx: dict):
@@ -112,24 +180,45 @@ class Telefono(commands.Cog):
         return canal
 
     @commands.command(name="llamar")
-    async def llamar(self, ctx, objetivo: discord.Member):
-        """Llama a otro personaje por teléfono."""
+    async def llamar(self, ctx, *, numero: str):
+        """Llama por teléfono. Acepta @mención, un número de teléfono marcado
+        a mano (el tuyo propio incluido), o 911/112/0800 para emergencias.
+        Uso: !llamar 0412-1234567  |  !llamar @alguien  |  !llamar 911"""
         datos_self = await db.get("personajes", str(ctx.author.id))
-        datos_obj = await db.get("personajes", str(objetivo.id))
-
         if not datos_self:
             return await ctx.send("❌ No tienes personaje.")
+
+        inv_self = datos_self.get("inventario", [])
+        if not any("telefono" in i or "smartphone" in i for i in inv_self):
+            return await ctx.send("❌ No tienes teléfono. Compra uno en la tienda.")
+
+        modo, valor = await _resolver_destino_llamada(ctx, numero)
+
+        if modo == "error":
+            return await ctx.send(valor)
+
+        if modo == "emergencia":
+            return await self._llamada_emergencia(ctx, datos_self, numero.strip())
+
+        objetivo = valor  # discord.Member (puede ser el propio ctx.author)
+
+        if objetivo.id == ctx.author.id:
+            # Llamarse a uno mismo: no tiene sentido crear un chat de 2 con la
+            # misma persona, pero SÍ debe estar permitido (el jugador lo pidió
+            # explícitamente) — se resuelve como un momento de rol suelto.
+            await asyncio.sleep(1)
+            return await ctx.send(embed=discord.Embed(
+                description=f"📱 **{datos_self['nombre']}** se marca a sí mismo... suena el propio teléfono en su bolsillo. "
+                            f"*(Te llamaste a ti mismo — nadie más contesta del otro lado.)*",
+                color=discord.Color.blurple()
+            ))
+
+        datos_obj = await db.get("personajes", str(objetivo.id))
         if not datos_obj:
             return await ctx.send(f"❌ {objetivo.display_name} no tiene personaje.")
 
-        # Verificar que tengan teléfono
-        inv_self = datos_self.get("inventario", [])
         inv_obj = datos_obj.get("inventario", [])
-        tiene_tel_self = any("telefono" in i or "smartphone" in i for i in inv_self)
         tiene_tel_obj = any("telefono" in i or "smartphone" in i for i in inv_obj)
-
-        if not tiene_tel_self:
-            return await ctx.send("❌ No tienes teléfono. Compra uno en la tienda.")
         if not tiene_tel_obj:
             return await ctx.send(f"❌ {datos_obj['nombre']} no tiene teléfono.")
 
@@ -156,6 +245,45 @@ class Telefono(commands.Cog):
         # Indicar en el canal de llamada
         await canal.send(f"📞 *{datos_self['nombre']} está llamando a {datos_obj['nombre']}...*")
         await ctx.send(f"📞 Llamando a **{datos_obj['nombre']}**... Canal: {canal.mention}", delete_after=10)
+
+    async def _llamada_emergencia(self, ctx, datos_self: dict, numero_marcado: str):
+        """911/112/0800: despacha automáticamente a la CPNB/bomberos/médicos
+        con la ubicación real del personaje que llama."""
+        from bot import CH_POLICIA_AVISO, ROL_POLICIA
+        ROL_BOMBERO_ID = 1359320808509538345
+        ROL_MEDICO_ID = 1359320808585035789
+
+        sector = datos_self.get("ubicacion", "?")
+        canal_actual = datos_self.get("canal_actual", "?")
+        nombre = datos_self.get("nombre", ctx.author.display_name)
+
+        embed_confirm = discord.Embed(
+            title="🚨 Llamada de emergencia realizada",
+            description=(
+                f"Marcaste **{numero_marcado}**. Un operador toma tu reporte:\n"
+                f"> *\"Emergencias, ¿cuál es tu ubicación?\"*\n\n"
+                f"📍 Reportaste estar en **{canal_actual}** ({sector}).\n"
+                f"Unidades han sido notificadas."
+            ),
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed_confirm)
+
+        ch = ctx.guild.get_channel(CH_POLICIA_AVISO)
+        if not ch:
+            return
+        rol_pol = ctx.guild.get_role(ROL_POLICIA)
+        rol_bombero = ctx.guild.get_role(ROL_BOMBERO_ID)
+        rol_medico = ctx.guild.get_role(ROL_MEDICO_ID)
+        pings = " ".join(r.mention for r in (rol_pol, rol_bombero, rol_medico) if r) or "@Emergencias"
+        try:
+            await ch.send(
+                f"🚨 {pings} **LLAMADA A {numero_marcado} — EMERGENCIA REPORTADA**\n"
+                f"**Quién llama:** {nombre} ({ctx.author.mention})\n"
+                f"**Ubicación reportada:** `{canal_actual}` ({sector})"
+            )
+        except Exception:
+            pass
 
     @commands.command(name="sms", aliases=["mensaje"])
     async def sms(self, ctx, objetivo: discord.Member, *, mensaje: str):

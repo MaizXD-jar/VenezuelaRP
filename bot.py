@@ -281,6 +281,7 @@ async def load_cogs():
         "cogs.roleplay", "cogs.ciudad", "cogs.tecnologia", "cogs.politica",
         "cogs.setup_rp", "cogs.mercado_negro", "cogs.educacion", "cogs.casino", "cogs.empresas",
         "cogs.hospital", "cogs.mapa_ia", "cogs.minijuegos", "cogs.embeds_canales",
+        "cogs.npc_vida", "cogs.noticias_ia", "cogs.elecciones", "cogs.justicia",
     ]
     for cog in cogs:
         try:
@@ -322,12 +323,12 @@ async def on_ready():
             npcs_existentes = await db.all("npcs")
             if not npcs_existentes:
                 print("[STARTUP] Creando NPCs de ejemplo...")
-                from cogs.npc import NPCS_EJEMPLO
+                from cogs.npc import NPCS_EJEMPLO, slug_npc
                 import random
                 creados = 0
                 for npc_template in NPCS_EJEMPLO:
                     nombre = npc_template["nombre"]
-                    npc_id = nombre.lower().replace(" ", "_").replace("'", "").replace("(", "").replace(")", "")[:30]
+                    npc_id = slug_npc(nombre)
                     existente = await db.get("npcs", npc_id)
                     if existente:
                         continue
@@ -353,6 +354,11 @@ async def on_ready():
                         "imagen": None,
                         "creado_automaticamente": True,
                     }
+                    if npc_template.get("protege_a"):
+                        npc_data["protege_a"] = npc_template["protege_a"]
+                    for campo in ("categoria", "tarifa", "nivel", "banda", "vehiculos"):
+                        if campo in npc_template:
+                            npc_data[campo] = npc_template[campo]
                     if npc_template.get("tipo") == "policia":
                         npc_data["inventario"]["glock_17"] = 1
                         npc_data["inventario"]["esposas"] = 1
@@ -361,6 +367,10 @@ async def on_ready():
                     elif npc_template.get("tipo") in ("sebin", "militar"):
                         npc_data["inventario"]["m4_carbine"] = 1
                         npc_data["inventario"]["chaleco_antibalas"] = 1
+                    elif npc_template.get("tipo") == "escolta":
+                        npc_data["inventario"]["m4_carbine"] = 1
+                        npc_data["inventario"]["chaleco_antibalas"] = 1
+                        npc_data["inventario"]["radio_portatil"] = 1
                     await db.set("npcs", npc_id, npc_data)
                     creados += 1
                 print(f"[STARTUP] {creados} NPCs de ejemplo creados.")

@@ -421,6 +421,59 @@ class Combate(commands.Cog):
         embed.set_footer(text=f"Ítem usado: {item} | Quedan en inventario: {inv.get(item, 0)}")
         await ctx.send(embed=embed)
 
+    # ── !descansar / !cama — curación gratis, pero solo si estás SOLO ──────────
+    @commands.command(name="descansar", aliases=["cama", "dormir"])
+    async def descansar(self, ctx):
+        """Descansa (echarte en la cama, sentarte a solas, etc.) para recuperar
+        HP gratis, SIN necesidad de items — pero solo funciona si no hay
+        ningún otro personaje en tu mismo canal ahora mismo. Tiene un
+        enfriamiento de 2 horas reales."""
+        datos = await db.get("personajes", str(ctx.author.id))
+        if not datos:
+            return await ctx.send("❌ Sin personaje.")
+        if datos.get("muerto"):
+            return await ctx.send("❌ Tu personaje está muerto.")
+
+        canal_actual = datos.get("canal_actual", "")
+        if ctx.channel.name != canal_actual:
+            return await ctx.send(f"❌ Debes estar en tu canal actual (`{canal_actual}`) para descansar ahí.")
+
+        # ¿Hay alguien más (con personaje) en este mismo canal ahora mismo?
+        todos = await db.all("personajes")
+        otros = [
+            uid for uid, d in todos.items()
+            if uid != str(ctx.author.id) and not d.get("muerto")
+            and d.get("canal_actual") == canal_actual
+        ]
+        if otros:
+            return await ctx.send("❌ No estás solo en este canal — no puedes descansar tranquilo con gente cerca.")
+
+        import time as _time
+        ahora = _time.time()
+        ultimo = datos.get("ultimo_descanso_ts", 0)
+        ESPERA = 2 * 3600
+        if ahora - ultimo < ESPERA:
+            restante = int((ESPERA - (ahora - ultimo)) / 60)
+            return await ctx.send(f"⏳ Ya descansaste hace poco. Vuelve a intentarlo en ~{restante} min.")
+
+        stats = datos.get("stats", {})
+        hp = stats.get("hp", 100)
+        hp_max = stats.get("hp_max", 100)
+        if hp >= hp_max:
+            await db.update("personajes", str(ctx.author.id), {"ultimo_descanso_ts": ahora})
+            return await ctx.send("✅ Ya tienes el HP al máximo. De todos modos, un buen descanso nunca sobra.")
+
+        curacion = max(10, int((hp_max - hp) * 0.35))
+        hp_nuevo = min(hp_max, hp + curacion)
+        stats["hp"] = hp_nuevo
+        await db.update("personajes", str(ctx.author.id), {"stats": stats, "ultimo_descanso_ts": ahora})
+
+        await ctx.send(embed=discord.Embed(
+            description=f"🛌 **{datos['nombre']}** descansa a solas un buen rato.\n"
+                        f"**HP:** {hp} → **{hp_nuevo}**/{hp_max} (+{hp_nuevo-hp})",
+            color=discord.Color.blurple()
+        ))
+
     # ── !curar — cura a otra persona con ítems ─────────────────────────────────
     @commands.command(name="curar")
     async def curar(self, ctx, objetivo: discord.Member, item: str = None):

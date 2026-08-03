@@ -4,10 +4,20 @@ La policía venezolana (CPNB) solo actúa en Venezuela.
 En Colombia y Miami tiene su propia fuerza local (sin ping a Venezuela).
 """
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import asyncio
+import random
 from utils import db
+from utils.mapa import SECTORES
 from bot import CH_MAS_BUSCADOS, CH_POLICIA_AVISO, ROL_POLICIA
+
+# Objetos que un control policial aleatorio puede encontrar encima del personaje.
+ARMAS_ILEGALES_SIN_PERMISO = {
+    "glock_17", "beretta_92", "colt_m1911", "desert_eagle", "sw_model_29",
+    "mp5", "uzi", "ak47", "m4_carbine", "remington_870", "navaja",
+    "cuchillo_militar", "punio_americano", "daga",
+}
+DROGAS_KEYS = {"marihuana", "cocaina", "crack", "heroina", "pastillas"}
 
 # Sectores donde opera la policía venezolana
 SECTORES_VENEZUELA = {
@@ -118,6 +128,123 @@ class ConfirmarArrestoView(discord.ui.View):
 class Policia(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    def start_tasks(self):
+        if not self.controles_random.is_running():
+            self.controles_random.start()
+
+    @tasks.loop(hours=4)
+    async def controles_random(self):
+        """Controles policiales aleatorios: la CPNB puede detenerte al azar,
+        sobre todo si llevas encima drogas o un arma sin permiso. Solo aplica
+        en sectores donde opera la policía venezolana."""
+        guild = self.bot.guilds[0] if self.bot.guilds else None
+        if not guild:
+            return
+
+        personajes = await db.all("personajes")
+        for uid, datos in personajes.items():
+            if datos.get("muerto") or datos.get("arrestado") or datos.get("en_viaje") or datos.get("deportado"):
+                continue
+            sector = datos.get("ubicacion", "")
+            if not _es_sector_venezolano(sector):
+                continue
+
+            inv = datos.get("inventario", {})
+            lleva_drogas = any(k in inv for k in DROGAS_KEYS)
+            armas_sin_permiso = [k for k in inv if k in ARMAS_ILEGALES_SIN_PERMISO]
+            tiene_permiso = "permiso_porte_armas" in inv
+            lleva_arma_ilegal = bool(armas_sin_permiso) and not tiene_permiso
+            es_ilegal_migratorio = bool(datos.get("inmigrante_ilegal"))
+
+            prob_control = (0.015 + (0.10 if lleva_drogas else 0) + (0.10 if lleva_arma_ilegal else 0)
+                            + (0.06 if es_ilegal_migratorio else 0))
+            if random.random() >= prob_control:
+                continue
+
+            member = guild.get_member(int(uid))
+            if not member:
+                continue
+
+            if es_ilegal_migratorio and random.random() < 0.5 and not (lleva_drogas or lleva_arma_ilegal):
+                # Verificación migratoria: puede terminar en deportación directa.
+                pais = datos.get("pais_origen", "su país de origen")
+                await db.update("personajes", uid, {
+                    "deportado": True, "ubicacion": "deportado", "canal_actual": None,
+                })
+                ch_pol = guild.get_channel(CH_POLICIA_AVISO)
+                if ch_pol:
+                    try:
+                        await ch_pol.send(embed=discord.Embed(
+                            title="✈️ DEPORTACIÓN AUTOMÁTICA (control migratorio aleatorio)",
+                            description=f"**{datos.get('nombre','?')}** fue deportado/a a **{pais}** tras un control en **{sector}**.",
+                            color=discord.Color.dark_red()
+                        ))
+                    except Exception:
+                        pass
+                try:
+                    await member.send(
+                        f"🛂 Un control migratorio te detectó sin papeles en regla en **{sector}** "
+                        f"y fuiste deportado a **{pais}**. Un admin puede permitirte volver con `!permitir_reingreso`."
+                    )
+                except Exception:
+                    pass
+                continue
+
+            if not (lleva_drogas or lleva_arma_ilegal):
+                # Control de rutina sin hallazgos: solo ambientación, sin consecuencia.
+                canal = discord.utils.get(guild.text_channels, name=datos.get("canal_actual", ""))
+                if canal:
+                    try:
+                        await canal.send(embed=discord.Embed(
+                            description=f"🚔 La CPNB detiene un momento a **{datos.get('nombre','?')}** para "
+                                        f"revisar documentos... todo en orden, puede seguir.",
+                            color=discord.Color.blurple()
+                        ))
+                    except Exception:
+                        pass
+                continue
+
+            # Hallazgo ilegal: detención automática.
+            razon_partes = []
+            if lleva_drogas:
+                razon_partes.append("posesión de drogas")
+            if lleva_arma_ilegal:
+                razon_partes.append("porte ilegal de arma de fuego sin permiso")
+            razon = "Control policial aleatorio: " + " y ".join(razon_partes) + "."
+
+            await db.update("personajes", uid, {
+                "arrestado": True,
+                "ubicacion": "prision-yare",
+                "canal_actual": "celda-yare",
+                "en_viaje": False,
+            })
+            arrestos = await db.get("arrestos", uid) or []
+            arrestos.append({"razon": razon, "admin": "sistema", "sector": sector})
+            await db.set("arrestos", uid, arrestos)
+
+            ch_pol = guild.get_channel(CH_POLICIA_AVISO)
+            if ch_pol:
+                try:
+                    await ch_pol.send(embed=discord.Embed(
+                        title="🚔 DETENCIÓN AUTOMÁTICA (control aleatorio)",
+                        description=f"**{datos.get('nombre','?')}** fue detenido/a en **{sector}**.\n{razon}",
+                        color=discord.Color.dark_red()
+                    ))
+                except Exception:
+                    pass
+            try:
+                await member.send(
+                    f"🚔 Un control policial aleatorio te detuvo en **{sector}**.\n"
+                    f"Razón: {razon}\nUsa `!hablar_abogado` para pedir asistencia legal."
+                )
+            except Exception:
+                pass
+            try:
+                from cogs.noticias_ia import registrar_evento
+                await registrar_evento("detencion", f"Detención policial en {sector}: {razon}.")
+            except Exception:
+                pass
 
     @commands.command(name="arrestar")
     async def arrestar(self, ctx, objetivo: discord.Member, *, razon: str = "Sin razón especificada"):
@@ -298,6 +425,54 @@ class Policia(commands.Cog):
         for uid, d in arrestados[:15]:
             embed.add_field(name=d.get("nombre", "?"), value=f"📍 {d.get('ubicacion', '?')}", inline=True)
         await ctx.send(embed=embed)
+
+    # ── !deportar / !permitir_reingreso ─────────────────────────────────────────
+    @commands.command(name="deportar")
+    async def deportar(self, ctx, objetivo: discord.Member, *, razon: str = "Estatus migratorio irregular"):
+        """[ADMIN] Deporta a un personaje de vuelta a su país de origen."""
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send("❌ Solo admins.")
+        datos = await db.get("personajes", str(objetivo.id))
+        if not datos:
+            return await ctx.send("❌ Ese usuario no tiene personaje.")
+
+        pais = datos.get("pais_origen", "su país de origen")
+        await db.update("personajes", str(objetivo.id), {
+            "deportado": True,
+            "arrestado": False,
+            "en_viaje": False,
+            "ubicacion": "deportado",
+            "canal_actual": None,
+        })
+        await ctx.send(embed=discord.Embed(
+            title="✈️ DEPORTACIÓN",
+            description=f"**{datos.get('nombre','?')}** fue deportado/a de vuelta a **{pais}**.\nRazón: {razon}",
+            color=discord.Color.dark_red()
+        ))
+        try:
+            await objetivo.send(
+                f"✈️ Tu personaje **{datos.get('nombre','?')}** fue deportado a **{pais}**.\n"
+                f"Razón: {razon}\nUn admin puede permitirte volver a entrar con `!permitir_reingreso`."
+            )
+        except Exception:
+            pass
+        try:
+            from cogs.noticias_ia import registrar_evento
+            await registrar_evento("deportacion", f"{datos.get('nombre','?')} fue deportado a {pais}. Razón: {razon}.")
+        except Exception:
+            pass
+
+    @commands.command(name="permitir_reingreso")
+    async def permitir_reingreso(self, ctx, objetivo: discord.Member):
+        """[ADMIN] Permite que un personaje deportado vuelva a entrar al país."""
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send("❌ Solo admins.")
+        datos = await db.get("personajes", str(objetivo.id))
+        if not datos or not datos.get("deportado"):
+            return await ctx.send("❌ Ese personaje no está deportado.")
+        barrio_origen = datos.get("barrio", "distrito-capital")
+        await db.update("personajes", str(objetivo.id), {"deportado": False, "ubicacion": barrio_origen})
+        await ctx.send(f"✅ **{datos.get('nombre','?')}** puede volver a entrar al país.")
 
     @commands.command(name="entorno")
     async def entorno(self, ctx, *, descripcion: str):

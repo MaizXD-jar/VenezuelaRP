@@ -324,6 +324,23 @@ def es_canal_casa(canal: str) -> bool:
     return bool(canal) and canal.startswith("casa-")
 
 
+def canal_con_sector(canal: str, sector: str | None = None) -> str:
+    """Formato único y consistente para mostrar un canal de RP: siempre indica
+    entre paréntesis a qué sector pertenece. Se usa en /viajar, /npc_viajar,
+    mapa_ia y los embeds de canales para que SIEMPRE quede claro el sector,
+    tanto para jugadores como para NPCs.
+
+    Ej: canal_con_sector("mercado-negro-petare") -> "mercado-negro-petare (Petare)"
+    """
+    if not canal:
+        return canal or "?"
+    sec_key = sector or get_sector_de_canal(canal)
+    if not sec_key:
+        return canal
+    display = SECTORES.get(sec_key, {}).get("display", sec_key)
+    return f"{canal} ({display})"
+
+
 def get_canal_info(canal: str) -> dict | None:
     for sec in SECTORES.values():
         if canal in sec["canales"]:
