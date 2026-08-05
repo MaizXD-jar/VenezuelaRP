@@ -348,7 +348,15 @@ class NPCVida(commands.Cog):
                         continue
 
             # ── Empezar actividad nueva ───────────────────────────────────────
-            nombre_act, desc, dur_min, dur_max = random.choice(ACTIVIDADES[tipo])
+            # Evita elegir la misma actividad que acaba de terminar: si no, la
+            # narración de "fin" y la de "inicio" describen básicamente lo mismo
+            # y parece que la acción se ha duplicado (p.ej. "cierra un trato" y
+            # justo después "vuelve a ofrecer productos en la esquina").
+            actividad_anterior = estado.get("actividad")
+            opciones = [a for a in ACTIVIDADES[tipo] if a[0] != actividad_anterior]
+            if not opciones:
+                opciones = ACTIVIDADES[tipo]
+            nombre_act, desc, dur_min, dur_max = random.choice(opciones)
             duracion = random.randint(dur_min, dur_max)
             await db.set("npc_estado", npc_id, {
                 "actividad": nombre_act,
@@ -605,6 +613,11 @@ class NPCVida(commands.Cog):
             if canal:
                 try:
                     await canal.edit(topic=f"🏠 Casa de {npc['nombre']} (NPC) en {sector}")
+                    # Igual que cuando compra un jugador: en cuanto la casa tiene
+                    # dueño, deja de ser visible para todo el mundo. Antes, al
+                    # comprarla un NPC, el canal se quedaba público (@everyone
+                    # seguía viéndolo) porque solo se cambiaba el topic.
+                    await canal.set_permissions(guild.default_role, read_messages=False, view_channel=False)
                 except Exception:
                     pass
                 casa["canal_id"] = canal.id

@@ -19,7 +19,35 @@ import asyncio
 import time
 import unicodedata
 from utils import db
+from utils import ia
 from utils.mapa import SECTORES, get_tiempo, get_sector_de_canal, mejor_ruta, es_canal_casa, canal_con_sector
+
+# Sistema de "responder" (reply de Discord) a un NPC/policía para hablarle
+# directamente, como si estuvieras delante de él en el canal.
+SYSTEM_NPC_CHAT = (
+    "Interpretas a un personaje NPC en un servidor de roleplay de Discord "
+    "ambientado en una Venezuela ficticia. Un jugador te acaba de responder "
+    "(reply de Discord) a algo que dijiste o hiciste, así que te está "
+    "hablando directamente. Responde SIEMPRE en español, en PRIMERA persona, "
+    "en 1-3 frases, con la personalidad y el tono que corresponde a tu "
+    "profesión (policía, criminal, funcionario, civil...). No repitas tu "
+    "nombre. No inventes que el jugador dijo algo que no dijo. Nada de "
+    "contenido sexual ni violencia gráfica explícita."
+)
+
+
+def _nombre_npc_de_embed(embed: discord.Embed) -> str | None:
+    """Extrae el nombre del NPC del autor de un embed de acción/diálogo suyo.
+    Soporta los formatos "[NPC] Nombre" (acciones) y "Nombre [Trabajo]"
+    (diálogo/npc_hablar/npc_usar)."""
+    if not embed.author or not embed.author.name:
+        return None
+    nombre = embed.author.name.strip()
+    if nombre.startswith("[NPC] "):
+        return nombre[len("[NPC] "):].strip() or None
+    if "[" in nombre:
+        return nombre.split("[")[0].strip() or None
+    return nombre or None
 
 
 def slug_npc(nombre: str, max_len: int = 30) -> str:
@@ -409,6 +437,75 @@ class NPC(commands.Cog):
         else:
             await interaction.response.send_message("ℹ️ No tienes ningún NPC activo.", ephemeral=True)
 
+    async def _intentar_responder_npc(self, message: discord.Message) -> bool:
+        """Si el jugador usa "Responder" (reply de Discord) sobre un mensaje de
+        un NPC (acción, diálogo, o un policía patrullando), lo trata como si
+        le estuviera hablando directamente: el NPC contesta en personaje,
+        siempre que siga vivo y siga estando en ese mismo sector/canal.
+        Devuelve True si se manejó la respuesta (para no seguir procesando el
+        mensaje de ninguna otra forma)."""
+        if not message.reference:
+            return False
+        ref = message.reference.resolved
+        if ref is None:
+            try:
+                ref = await message.channel.fetch_message(message.reference.message_id)
+            except Exception:
+                return False
+        if not ref or not ref.author.bot or ref.author.id != self.bot.user.id or not ref.embeds:
+            return False
+
+        nombre_npc = _nombre_npc_de_embed(ref.embeds[0])
+        if not nombre_npc:
+            return False
+
+        npcs = await db.all("npcs")
+        npc_id = None
+        npc = None
+        nombre_lower = nombre_npc.lower()
+        for nid, n in npcs.items():
+            if n.get("nombre", "").lower() == nombre_lower:
+                npc_id, npc = nid, n
+                break
+        if not npc:
+            for nid, n in npcs.items():
+                if nombre_lower in n.get("nombre", "").lower():
+                    npc_id, npc = nid, n
+                    break
+        if not npc or npc.get("muerto") or npc.get("arrestado_npc"):
+            return False
+
+        # El NPC tiene que seguir "aquí": mismo sector que el canal donde
+        # respondiste (y no estar en tránsito hacia otro sitio).
+        sector_canal = get_sector_de_canal(message.channel.name)
+        if not sector_canal or npc.get("ubicacion") != sector_canal:
+            return False
+        if npc_id in npc_viajes_activos:
+            return False
+
+        fallback = f"*{npc['nombre']} te mira, pero no dice nada por ahora.*"
+        texto = fallback
+        if ia.hay_ia():
+            prompt = (
+                f"Personaje: {npc['nombre']}, {npc.get('edad','?')} años, "
+                f"profesión: {npc.get('trabajo','?')} (tipo: {npc.get('tipo','civil')}).\n"
+                f"Un jugador te responde/habla: \"{message.content}\"\n"
+                f"Responde en personaje, en primera persona, 1-3 frases."
+            )
+            texto_ia, _ = await ia.generar(SYSTEM_NPC_CHAT, prompt, max_tokens=150, timeout_seg=20)
+            texto = texto_ia or fallback
+
+        embed = discord.Embed(description=texto, color=discord.Color.teal())
+        if npc.get("imagen"):
+            embed.set_author(name=f"{npc['nombre']} [{npc.get('trabajo','?')}]", icon_url=npc["imagen"])
+        else:
+            embed.set_author(name=f"{npc['nombre']} [{npc.get('trabajo','?')}]")
+        try:
+            await message.reply(embed=embed, mention_author=False)
+        except Exception:
+            await message.channel.send(embed=embed)
+        return True
+
     # ── on_message: intercept mensajes del admin como NPC ─────────────────────
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -416,6 +513,13 @@ class NPC(commands.Cog):
             return
         if not message.guild:
             return
+
+        # "Responder" (reply de Discord) a un NPC/policía = hablarle directamente.
+        if message.reference and not (message.content.startswith("!") or message.content.startswith("/")):
+            manejado = await self._intentar_responder_npc(message)
+            if manejado:
+                return
+
         if message.author.id not in self.npc_activo:
             return
         if message.content.startswith("!") or message.content.startswith("/"):

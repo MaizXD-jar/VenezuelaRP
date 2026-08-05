@@ -3,8 +3,8 @@ utils/permisos.py — Sistema de visibilidad de canales.
 
 REGLA DE VISIBILIDAD:
 - Solo ves el canal donde estás AHORA (lectura + escritura)
-- Y el ÚLTIMO canal donde estuviste (solo lectura — ves el historial pero no puedes escribir)
-- Todos los demás canales son invisibles
+- En cuanto te vas, el canal anterior deja de ser visible por completo
+  (ni siquiera en solo lectura): tu personaje ya no está ahí.
 """
 import discord
 from utils.roles import ROL_CIUDADANO
@@ -63,18 +63,17 @@ async def actualizar_visibilidad_al_viajar(
 ):
     """
     Llamar cuando el personaje llega a un nuevo canal de RP.
-    
-    - canal_origen (donde estaba): pasa a SOLO LECTURA
+
+    - canal_origen (donde estaba): se le revoca el acceso por completo,
+      deja de verlo (ya no está ahí).
     - canal_destino (donde llega): pasa a LECTURA + ESCRITURA
-    
-    El jugador siempre ve exactamente 2 canales:
-    1. El actual → puede escribir
-    2. El anterior → solo puede leer (historial)
-    
+
+    El jugador siempre ve exactamente 1 canal de RP: el actual.
+
     Nota: si el origen es el mismo que el destino (viaje interno), no se hace nada.
     """
     if canal_origen and canal_origen != canal_destino:
-        await dar_solo_lectura_canal(guild, member, canal_origen)
+        await revocar_acceso_canal(guild, member, canal_origen)
     await dar_acceso_canal(guild, member, canal_destino)
 
 

@@ -128,6 +128,19 @@ def es_arma_ilegal(arma: str) -> bool:
         return TODAS_LAS_ARMAS[arma].get("ilegal", False)
     return False
 
+# ── ARMAS BLANCAS (cuchillos, navajas, dagas...) ──────────────────────────────
+# Un arma de filo es mortal a corta distancia: en combate cuerpo a cuerpo tiene
+# alta probabilidad de clavarse una puñalada extra, a diferencia de un arma
+# contundente (bate, palo, martillo...).
+ARMAS_CORTANTES = {
+    "navaja", "cuchillo_cocina", "cuchillo_militar", "daga",
+    "punial_improvisado", "cuchillo", "machete",
+}
+
+
+def es_arma_cortante(arma: str) -> bool:
+    return arma in ARMAS_CORTANTES
+
 # Categorías para la tienda
 CATEGORIAS_ARMAS = {
     "melee": ARMAS_MELEE,

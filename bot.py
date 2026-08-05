@@ -292,6 +292,24 @@ async def load_cogs():
 
 
 @bot.event
+async def on_message(message: discord.Message):
+    # Por defecto, discord.py ignora CUALQUIER mensaje de un bot al procesar
+    # comandos con prefijo ("!"), incluidos los de otros bots (p.ej. bots de
+    # NPCs u otras integraciones del servidor): Bot.process_commands()
+    # descarta el mensaje si message.author.bot es True, sin excepción.
+    # Aquí solo se ignoran los mensajes del propio bot (para no reaccionar a
+    # sí mismo); cualquier otro bot puede ejecutar comandos con prefijo con
+    # normalidad, saltándonos ese filtro a mano.
+    if bot.user and message.author.id == bot.user.id:
+        return
+    if message.author.bot:
+        ctx = await bot.get_context(message)
+        await bot.invoke(ctx)
+    else:
+        await bot.process_commands(message)
+
+
+@bot.event
 async def on_ready():
     print(f"Bot listo: {bot.user} ({bot.user.id})")
     await bot.tree.sync()

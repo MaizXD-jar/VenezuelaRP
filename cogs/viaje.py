@@ -431,7 +431,7 @@ class Viaje(commands.Cog):
             segundos = 20
             minutos = 1
         elif sector_origen == sector_destino:
-            minutos = random.randint(5, 15)
+            minutos = random.randint(1, 4)
             segundos = minutos * 60
         else:
             minutos = get_tiempo(sector_origen, sector_destino, metodo)
@@ -479,8 +479,8 @@ class Viaje(commands.Cog):
             minutos += extra
             segundos += extra * 60
 
-        # Cap en 5 minutos reales
-        segundos = min(segundos, 300)
+        # Cap en 3 minutos reales
+        segundos = min(segundos, 180)
 
         llegada_ts = time.time() + segundos
         viajes_activos[user.id] = {

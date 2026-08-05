@@ -11,11 +11,38 @@ from utils import db
 from utils import lesiones as lesiones_mod
 from utils import muerte as muerte_mod
 from utils.armas import (TODAS_LAS_ARMAS, EQUIPO_DEFENSIVO, get_daño,
-                          calcular_defensa_total, es_arma_de_fuego, es_arma_ilegal)
+                          calcular_defensa_total, es_arma_de_fuego, es_arma_ilegal,
+                          es_arma_cortante)
 
 CH_POLICIA_AVISO = 1359320808526450780
 ROL_POLICIA      = 1359320808526450780
 CH_MUERTOS       = 1359320811420520613
+
+# Curso que hay que tener completado para pelear con más soltura (patadas
+# efectivas, mejores bloqueos y esquivas). Se otorga al terminar
+# "autodefensa" en /estudiar (ver cogs/educacion.py).
+CURSO_ARTE_MARCIAL = "autodefensa"
+
+# Probabilidad BASE de que llegue la policía cuando hay una pelea. Sube si
+# hay arma de por medio (más aún si es de fuego) o si alguien resulta
+# apuñalado.
+PROB_POLICIA_PELEA_BASE = 0.30
+PROB_POLICIA_PELEA_ARMA = 0.45
+PROB_POLICIA_PELEA_APUÑALADO = 0.60
+
+# ── MOVIMIENTOS DE COMBATE CUERPO A CUERPO ───────────────────────────────────
+MOVIMIENTOS = {
+    "golpear":  {"emoji": "🥊", "label": "Golpear",  "style": discord.ButtonStyle.danger},
+    "patada":   {"emoji": "🦵", "label": "Patada",   "style": discord.ButtonStyle.danger},
+    "bloquear": {"emoji": "🛡️", "label": "Bloquear", "style": discord.ButtonStyle.primary},
+    "esquivar": {"emoji": "💨", "label": "Esquivar", "style": discord.ButtonStyle.success},
+}
+
+
+def _tiene_arte_marcial(datos: dict) -> bool:
+    """True si el personaje completó el curso de autodefensa: sabe pelear
+    con más técnica (patadas de verdad, mejores bloqueos/esquivas)."""
+    return CURSO_ARTE_MARCIAL in (datos.get("certificados") or [])
 
 # ── ÍTEMS DE CURACIÓN Y SUS EFECTOS ──────────────────────────────────────────
 ITEMS_CURACION = {
@@ -43,7 +70,9 @@ async def _notificar_policia(guild, canal, mensaje):
         await ch_pol.send(f"🚨 {ping} **INCIDENTE:** {mensaje}\n📍 {canal.mention if canal else '?'}")
 
 
-def _calcular_daño_combate(atacante: dict, defensor: dict, arma: str = None) -> tuple:
+def _calcular_daño_combate(atacante: dict, defensor: dict, arma: str = None,
+                            movimiento: str = "golpear", entrenado: bool = False) -> tuple:
+    """Devuelve (daño_final, texto_extra, apuñalado: bool)."""
     stats_a = atacante.get("stats", {})
     stats_d = defensor.get("stats", {})
     fuerza = stats_a.get("fuerza", 5)
@@ -57,12 +86,24 @@ def _calcular_daño_combate(atacante: dict, defensor: dict, arma: str = None) ->
     defensa_equipo = calcular_defensa_total(list(inv_d.keys()))
     daño_final = max(1, int((base - reduccion_agilidad) * (1 - defensa_equipo / 100) + random.randint(-3, 5)))
 
-    critico = ""
+    # La patada pega más fuerte si sabes pelear (autodefensa); si la intentas
+    # sin haber entrenado, sale peor que un golpe normal.
+    if movimiento == "patada":
+        daño_final = int(daño_final * (1.35 if entrenado else 0.75))
+
+    texto_extra = ""
+    apuñalado = False
     if random.random() < 0.10:
         daño_final = int(daño_final * 1.6)
-        critico = " ⚡**¡CRÍTICO!**"
+        texto_extra = " ⚡**¡CRÍTICO!**"
 
-    return daño_final, critico
+    # Cuchillo/navaja/machete: alta probabilidad de clavar una puñalada extra.
+    if arma and es_arma_cortante(arma) and random.random() < 0.55:
+        apuñalado = True
+        daño_final = int(daño_final * 1.4)
+        texto_extra += " 🔪**¡APUÑALADO!**"
+
+    return max(1, daño_final), texto_extra, apuñalado
 
 
 def _primera_arma(inventario: dict) -> str:
@@ -104,6 +145,49 @@ class HuirView(discord.ui.View):
         self.stop()
 
 
+class MovimientoView(discord.ui.View):
+    """Cada ronda de una pelea cuerpo a cuerpo: los DOS combatientes eligen en
+    secreto su movimiento (golpear, patada, bloquear o esquivar) con botones.
+    En cuanto ambos han elegido (o se acaba el tiempo), la vista se resuelve
+    y el que faltó por elegir asume 'golpear' por defecto."""
+
+    def __init__(self, atacante_id: int, defensor_id: int, timeout: float = 20.0):
+        super().__init__(timeout=timeout)
+        self.atacante_id = atacante_id
+        self.defensor_id = defensor_id
+        self.elecciones: dict[int, str] = {}
+        self._evento = asyncio.Event()
+        for clave, info in MOVIMIENTOS.items():
+            self.add_item(self._crear_boton(clave, info))
+
+    def _crear_boton(self, clave: str, info: dict):
+        boton = discord.ui.Button(label=info["label"], emoji=info["emoji"], style=info["style"])
+
+        async def callback(interaction: discord.Interaction, clave=clave):
+            if interaction.user.id not in (self.atacante_id, self.defensor_id):
+                return await interaction.response.send_message("No es tu combate.", ephemeral=True)
+            if interaction.user.id in self.elecciones:
+                return await interaction.response.send_message("Ya elegiste tu movimiento este asalto.", ephemeral=True)
+            self.elecciones[interaction.user.id] = clave
+            await interaction.response.send_message(
+                f"{info['emoji']} Eliges **{info['label']}**.", ephemeral=True)
+            if len(self.elecciones) >= 2:
+                self._evento.set()
+                self.stop()
+
+        boton.callback = callback
+        return boton
+
+    async def esperar_elecciones(self):
+        try:
+            await asyncio.wait_for(self._evento.wait(), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            pass
+        self.elecciones.setdefault(self.atacante_id, "golpear")
+        self.elecciones.setdefault(self.defensor_id, "golpear")
+        return self.elecciones[self.atacante_id], self.elecciones[self.defensor_id]
+
+
 class AceptarPeleaView(discord.ui.View):
     def __init__(self, atacante_id, defensor_id, datos_a, datos_d, cog):
         super().__init__(timeout=60)
@@ -132,67 +216,11 @@ class AceptarPeleaView(discord.ui.View):
 
     async def _resolver_pelea(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        nombre_a = self.datos_a.get("nombre", "?")
-        nombre_d = self.datos_d.get("nombre", "?")
-        hp_a = self.datos_a.get("stats", {}).get("hp", 100)
-        hp_d = self.datos_d.get("stats", {}).get("hp", 100)
-        arma_a = _primera_arma(self.datos_a.get("inventario", {}))
-        arma_d = _primera_arma(self.datos_d.get("inventario", {}))
-
-        # Stats "efectivas" (con penalización de lesiones activas) SOLO para el
-        # cálculo de daño — el HP real sigue viviendo en hp_a/hp_d por separado.
-        stats_a_ef = await lesiones_mod.stats_con_penalizacion(self.atacante_id, self.datos_a.get("stats", {}))
-        stats_d_ef = await lesiones_mod.stats_con_penalizacion(self.defensor_id, self.datos_d.get("stats", {}))
-        datos_a_combate = {**self.datos_a, "stats": stats_a_ef}
-        datos_d_combate = {**self.datos_d, "stats": stats_d_ef}
-
-        log = []
-        ronda = 1
-
-        while hp_a > 0 and hp_d > 0 and ronda <= 8:
-            daño, crit = _calcular_daño_combate(datos_a_combate, datos_d_combate, arma_a)
-            hp_d = max(0, hp_d - daño)
-            arma_txt = f" con **{arma_a}**" if arma_a else ""
-            log.append(f"R{ronda}: {nombre_a}{arma_txt} → -{daño}HP a {nombre_d}{crit}")
-            if hp_d <= 0: break
-
-            daño2, crit2 = _calcular_daño_combate(datos_d_combate, datos_a_combate, arma_d)
-            hp_a = max(0, hp_a - daño2)
-            arma_txt2 = f" con **{arma_d}**" if arma_d else ""
-            log.append(f"R{ronda}: {nombre_d}{arma_txt2} → -{daño2}HP a {nombre_a}{crit2}")
-            ronda += 1
-
-        if hp_a <= 0 and hp_d <= 0:
-            resultado = "💀 ¡Ambos cayeron! Empate."
-        elif hp_a <= 0:
-            resultado = f"🏆 **{nombre_d}** ganó!"
-        elif hp_d <= 0:
-            resultado = f"🏆 **{nombre_a}** ganó!"
-        else:
-            resultado = f"🏆 **{nombre_a if hp_a > hp_d else nombre_d}** gana por puntos."
-
-        # Resolver caídas: ya no es muerte automática, hay chance de sobrevivir herido.
-        if hp_a <= 0:
-            hp_a = await self.cog._procesar_caida(self.atacante_id, self.datos_a, interaction.guild, es_tiroteo=False)
-        if hp_d <= 0:
-            hp_d = await self.cog._procesar_caida(self.defensor_id, self.datos_d, interaction.guild, es_tiroteo=False)
-
-        embed = discord.Embed(title="⚔️ RESULTADO DE LA PELEA", color=0xE74C3C)
-        embed.description = "\n".join(log[-6:])
-        embed.add_field(name="HP Final", value=f"{nombre_a}: {hp_a} | {nombre_d}: {hp_d}", inline=False)
-        embed.add_field(name="🏆 Resultado", value=resultado, inline=False)
-
-        s_a = self.datos_a.get("stats", {}); s_a["hp"] = hp_a
-        s_d = self.datos_d.get("stats", {}); s_d["hp"] = hp_d
-        await db.update("personajes", str(self.atacante_id), {"stats": s_a})
-        await db.update("personajes", str(self.defensor_id), {"stats": s_d})
-
-        if random.random() < 0.15:
-            embed.add_field(name="🚔 POLICÍA", value="¡La CPNB llegó al lugar!", inline=False)
-
-        await interaction.followup.send(embed=embed)
-        if random.random() < 0.15:
-            await _notificar_policia(interaction.guild, interaction.channel, f"Pelea entre {nombre_a} y {nombre_d}.")
+        await self.cog.resolver_pelea_interactiva(
+            interaction.channel, interaction.guild,
+            self.atacante_id, self.defensor_id, self.datos_a, self.datos_d,
+            enviar=interaction.followup.send,
+        )
 
 
 class Combate(commands.Cog):
@@ -241,6 +269,135 @@ class Combate(commands.Cog):
                 except Exception:
                     pass
         return hp_critico
+
+    async def resolver_pelea_interactiva(self, canal, guild, atacante_id: int, defensor_id: int,
+                                          datos_a: dict, datos_d: dict, enviar=None,
+                                          intro: str = None) -> discord.Embed:
+        """Pelea cuerpo a cuerpo ronda a ronda: en cada asalto AMBOS combatientes
+        eligen su movimiento (golpear/patada/bloquear/esquivar) con botones.
+        Quien tiene el curso de autodefensa pelea con más técnica: patadas más
+        fuertes y mejores bloqueos/esquivas. Si alguno lleva cuchillo/navaja/
+        machete, hay alta probabilidad de que conecte una puñalada extra.
+        `enviar` es la función para mandar el mensaje final (interaction.followup.send
+        o ctx.send); si no se da, se usa canal.send."""
+        enviar = enviar or canal.send
+        nombre_a = datos_a.get("nombre", "?")
+        nombre_d = datos_d.get("nombre", "?")
+        hp_a = datos_a.get("stats", {}).get("hp", 100)
+        hp_d = datos_d.get("stats", {}).get("hp", 100)
+        arma_a = _primera_arma(datos_a.get("inventario", {}))
+        arma_d = _primera_arma(datos_d.get("inventario", {}))
+        entrenado_a = _tiene_arte_marcial(datos_a)
+        entrenado_d = _tiene_arte_marcial(datos_d)
+
+        stats_a_ef = await lesiones_mod.stats_con_penalizacion(atacante_id, datos_a.get("stats", {}))
+        stats_d_ef = await lesiones_mod.stats_con_penalizacion(defensor_id, datos_d.get("stats", {}))
+        datos_a_combate = {**datos_a, "stats": stats_a_ef}
+        datos_d_combate = {**datos_d, "stats": stats_d_ef}
+
+        log = []
+        hubo_apuñalada = False
+        hubo_arma = bool(arma_a or arma_d)
+        ronda = 1
+
+        if intro:
+            try:
+                await canal.send(intro)
+            except Exception:
+                pass
+
+        while hp_a > 0 and hp_d > 0 and ronda <= 6:
+            vista = MovimientoView(atacante_id, defensor_id)
+            mov_msg = await canal.send(
+                f"**Ronda {ronda}** — {nombre_a} vs {nombre_d}: elijan su movimiento "
+                f"(20s, si no eligen se asume Golpear).", view=vista)
+            mov_a, mov_d = await vista.esperar_elecciones()
+            try:
+                await mov_msg.delete()
+            except Exception:
+                pass
+
+            def _resolver_uno(atk_datos, def_datos, atk_mov, def_mov, arma_atk, entrenado_atk, nombre_atk, nombre_def):
+                if atk_mov not in ("golpear", "patada"):
+                    return None  # no ataca este asalto (bloquea/esquiva sin iniciativa)
+                daño, extra, apuñalado = _calcular_daño_combate(
+                    atk_datos, def_datos, arma_atk, movimiento=atk_mov, entrenado=entrenado_atk)
+                # El defensor reacciona:
+                if def_mov == "bloquear":
+                    # Bloquear frena bien un golpe, pero una patada lo atraviesa más.
+                    reduccion = 0.35 if atk_mov == "patada" else (0.65 if _tiene_arte_marcial(def_datos) else 0.5)
+                    daño = max(1, int(daño * (1 - reduccion)))
+                    extra += " 🛡️(bloqueado en parte)"
+                elif def_mov == "esquivar":
+                    prob_esquiva = min(0.65, def_datos.get("stats", {}).get("agilidad", 5) / 18
+                                        + (0.12 if _tiene_arte_marcial(def_datos) else 0))
+                    if atk_mov == "patada":
+                        prob_esquiva *= 0.7
+                    if random.random() < prob_esquiva:
+                        return (0, " 💨¡ESQUIVADO!", False, nombre_atk, nombre_def, atk_mov)
+                return (daño, extra, apuñalado, nombre_atk, nombre_def, atk_mov)
+
+            resultados = []
+            r1 = _resolver_uno(datos_a_combate, datos_d_combate, mov_a, mov_d, arma_a, entrenado_a, nombre_a, nombre_d)
+            if r1:
+                resultados.append(r1)
+            r2 = _resolver_uno(datos_d_combate, datos_a_combate, mov_d, mov_a, arma_d, entrenado_d, nombre_d, nombre_a)
+            if r2:
+                resultados.append(r2)
+
+            if not resultados:
+                log.append(f"R{ronda}: ambos se estudian sin atacar (🛡️/💨).")
+
+            for daño, extra, apuñalado, nombre_atk, nombre_def, mov in resultados:
+                emoji_mov = MOVIMIENTOS[mov]["emoji"]
+                if nombre_atk == nombre_a:
+                    hp_d = max(0, hp_d - daño)
+                else:
+                    hp_a = max(0, hp_a - daño)
+                if apuñalado:
+                    hubo_apuñalada = True
+                log.append(f"R{ronda}: {emoji_mov} {nombre_atk} → -{daño}HP a {nombre_def}{extra}")
+
+            ronda += 1
+
+        if hp_a <= 0 and hp_d <= 0:
+            resultado = "💀 ¡Ambos cayeron! Empate."
+        elif hp_a <= 0:
+            resultado = f"🏆 **{nombre_d}** ganó!"
+        elif hp_d <= 0:
+            resultado = f"🏆 **{nombre_a}** ganó!"
+        else:
+            resultado = f"🏆 **{nombre_a if hp_a > hp_d else nombre_d}** gana por puntos."
+
+        if hp_a <= 0:
+            hp_a = await self._procesar_caida(atacante_id, datos_a, guild, es_tiroteo=False)
+        if hp_d <= 0:
+            hp_d = await self._procesar_caida(defensor_id, datos_d, guild, es_tiroteo=False)
+
+        embed = discord.Embed(title="⚔️ RESULTADO DE LA PELEA", color=0xE74C3C)
+        embed.description = "\n".join(log[-10:])
+        embed.add_field(name="HP Final", value=f"{nombre_a}: {hp_a} | {nombre_d}: {hp_d}", inline=False)
+        embed.add_field(name="🏆 Resultado", value=resultado, inline=False)
+
+        s_a = datos_a.get("stats", {}); s_a["hp"] = hp_a
+        s_d = datos_d.get("stats", {}); s_d["hp"] = hp_d
+        await db.update("personajes", str(atacante_id), {"stats": s_a})
+        await db.update("personajes", str(defensor_id), {"stats": s_d})
+
+        # Cuanto más grave la pelea, más probable que llegue la policía.
+        prob_policia = PROB_POLICIA_PELEA_BASE
+        if hubo_arma:
+            prob_policia = PROB_POLICIA_PELEA_ARMA
+        if hubo_apuñalada:
+            prob_policia = PROB_POLICIA_PELEA_APUÑALADO
+        llega_policia = random.random() < prob_policia
+        if llega_policia:
+            embed.add_field(name="🚔 POLICÍA", value="¡La CPNB llegó al lugar!", inline=False)
+
+        await enviar(embed=embed)
+        if llega_policia:
+            await _notificar_policia(guild, canal, f"Pelea entre {nombre_a} y {nombre_d}.")
+        return embed
 
     @commands.command(name="pelear")
     async def pelear(self, ctx, oponente: discord.Member):
@@ -305,7 +462,7 @@ class Combate(commands.Cog):
         while hp_a > 0 and hp_d > 0 and ronda <= 10:
             prob_acierto = min(0.85, (stats_a_ef.get("tecnica", 3) + 5) / 20)
             if random.random() < prob_acierto:
-                daño, crit = _calcular_daño_combate(datos_a_combate, datos_d_combate, arma_a)
+                daño, crit, _ap = _calcular_daño_combate(datos_a_combate, datos_d_combate, arma_a)
                 hp_d = max(0, hp_d - daño)
                 log_lines.append(f"💥 R{ronda}: **{nombre_a}** dispara ({arma_a}) → -{daño}HP {crit}")
             else:
@@ -318,7 +475,7 @@ class Combate(commands.Cog):
             if arma_d and es_arma_de_fuego(arma_d):
                 prob_d = min(0.75, (stats_d_ef.get("tecnica", 3) + 5) / 20)
                 if random.random() < prob_d:
-                    daño2, crit2 = _calcular_daño_combate(datos_d_combate, datos_a_combate, arma_d)
+                    daño2, crit2, _ap2 = _calcular_daño_combate(datos_d_combate, datos_a_combate, arma_d)
                     hp_a = max(0, hp_a - daño2)
                     log_lines.append(f"💥 R{ronda}: **{nombre_d}** responde ({arma_d}) → -{daño2}HP {crit2}")
                 else:
@@ -368,6 +525,84 @@ class Combate(commands.Cog):
         arma_es_ilegal = es_arma_ilegal(arma_a) or (arma_d and es_arma_ilegal(arma_d))
         urgencia = "🚨🚨 ARMA ILEGAL" if arma_es_ilegal else "🚨"
         await _notificar_policia(ctx.guild, ctx.channel, f"{urgencia} Tiroteo reportado. {nombre_a} vs {nombre_d}.")
+
+    # ── !asesinato — intento de asesinato sigiloso ───────────────────────────
+    @commands.command(name="asesinato", aliases=["asesinar"])
+    async def asesinato(self, ctx, objetivo: discord.Member):
+        """Intenta un asesinato sigiloso con un arma blanca oculta. Si sale mal,
+        el objetivo se da cuenta y la cosa termina en una pelea abierta cuerpo
+        a cuerpo (con mucha más probabilidad de que llegue la policía)."""
+        if objetivo.id == ctx.author.id:
+            return await ctx.send("❌ No puedes asesinarte a ti mismo.")
+        datos_a = await db.get("personajes", str(ctx.author.id))
+        datos_d = await db.get("personajes", str(objetivo.id))
+        if not datos_a: return await ctx.send("❌ Sin personaje.")
+        if not datos_d: return await ctx.send(f"❌ {objetivo.display_name} no tiene personaje.")
+        if datos_a.get("ubicacion") != datos_d.get("ubicacion"):
+            return await ctx.send("❌ Deben estar en el mismo sector.")
+
+        arma = _primera_arma(datos_a.get("inventario", {}))
+        if not arma or not es_arma_cortante(arma):
+            return await ctx.send(
+                "❌ Necesitas un arma blanca oculta (navaja, cuchillo, daga, machete...) "
+                "para intentar un asesinato sigiloso."
+            )
+        key = tuple(sorted([ctx.author.id, objetivo.id]))
+        if key in self.peleas_activas:
+            return await ctx.send("❌ Ya hay un enfrentamiento activo entre ustedes.")
+
+        stats_a_ef = await lesiones_mod.stats_con_penalizacion(ctx.author.id, datos_a.get("stats", {}))
+        stats_d_ef = await lesiones_mod.stats_con_penalizacion(objetivo.id, datos_d.get("stats", {}))
+
+        # Probabilidad de sigilo: técnica + agilidad del atacante contra la
+        # percepción (agilidad + inteligencia) del objetivo.
+        sigilo = stats_a_ef.get("tecnica", 3) * 1.2 + stats_a_ef.get("agilidad", 5)
+        percepcion = stats_d_ef.get("agilidad", 5) + stats_d_ef.get("inteligencia", 5) * 0.5
+        prob_exito = max(0.10, min(0.85, 0.5 + (sigilo - percepcion) / 30))
+
+        await ctx.send(f"🔪 **{datos_a['nombre']}** se acerca sigilosamente a **{datos_d['nombre']}**, arma en mano...")
+        await asyncio.sleep(1.5)
+
+        self.peleas_activas[key] = True
+        try:
+            if random.random() < prob_exito:
+                # Éxito: golpe letal por sorpresa, mucha más probabilidad de
+                # muerte que en una pelea normal (es un ataque sorpresa).
+                hp_d_final = await self._procesar_caida(
+                    objetivo.id, datos_d, ctx.guild, es_tiroteo=False)
+                # Sobrescribe la probabilidad "de pelea" con una más letal:
+                # si sobrevivió con el roll normal, hay una segunda oportunidad
+                # de que el golpe sorpresa igual sea mortal.
+                if hp_d_final > 0 and random.random() < 0.5:
+                    await self._manejar_muerte(objetivo.id, datos_d, ctx.guild, causa=f"asesinato con {arma}")
+                    hp_d_final = 0
+                stats_d = datos_d.get("stats", {}); stats_d["hp"] = hp_d_final
+                await db.update("personajes", str(objetivo.id), {"stats": stats_d})
+
+                embed = discord.Embed(
+                    title="🔪 Asesinato sigiloso",
+                    description=(f"**{datos_a['nombre']}** clava el **{arma}** en **{datos_d['nombre']}** "
+                                 f"sin que nadie se dé cuenta a tiempo."),
+                    color=0x2C2F33
+                )
+                embed.add_field(name="Resultado", value="💀 Fallecido" if hp_d_final <= 0 else f"🚑 Gravemente herido/a ({hp_d_final} HP)", inline=False)
+                await ctx.send(embed=embed)
+                if random.random() < 0.20:
+                    await _notificar_policia(ctx.guild, ctx.channel,
+                        f"🚨 Posible asesinato: encontraron a {datos_d['nombre']} malherido/a cerca de {ctx.channel.mention}.")
+            else:
+                # Fracaso: el objetivo se da cuenta y esto se convierte en pelea.
+                await ctx.send(embed=discord.Embed(
+                    description=(f"⚠️ **{datos_d['nombre']}** se da cuenta justo a tiempo y esquiva la puñalada — "
+                                 f"¡el intento de asesinato se convierte en una pelea abierta!"),
+                    color=discord.Color.orange()
+                ))
+                await self.resolver_pelea_interactiva(ctx.channel, ctx.guild, ctx.author.id, objetivo.id, datos_a, datos_d)
+                # Un intento de asesinato fallido siempre acaba con la policía en camino.
+                await _notificar_policia(ctx.guild, ctx.channel,
+                    f"🚨🚨 INTENTO DE ASESINATO fallido: {datos_a['nombre']} contra {datos_d['nombre']}.")
+        finally:
+            self.peleas_activas.pop(key, None)
 
     # ── !curarse — se cura a sí mismo con ítems ────────────────────────────────
     @commands.command(name="curarse")
